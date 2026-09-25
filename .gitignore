@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Personal dictation history. Never committed.
+transcripts.log
+
+# Registry exports written by the installer before it changes anything.
+backups/
+
+# Release artifacts.
+*.zip
+
+# Editor and OS noise.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

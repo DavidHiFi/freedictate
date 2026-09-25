@@ -1,0 +1,6 @@
+# FreeDictate requirements. Lightweight local dictation. No cloud, no limits.
+faster-whisper==1.2.1
+sounddevice==0.5.6
+numpy==2.5.3
+pyperclip==1.11.0
+pynput==1.8.2

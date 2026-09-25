@@ -1,0 +1,15 @@
+{
+  "model": "small.en",
+  "device": "cpu",
+  "compute_type": "int8",
+  "language": "en",
+  "input_device": "",
+  "sample_rate": 16000,
+  "hotkey": "ctrl+win",
+  "auto_paste": true,
+  "paste_delay": 0.15,
+  "beeps": true,
+  "min_seconds": 0.5,
+  "silence_peak": 0.005,
+  "remove_fillers": true
+}
