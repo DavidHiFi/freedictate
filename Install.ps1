@@ -25,7 +25,7 @@ if (-not $py) {
   Write-Output ""
   Write-Output "Python was not found. Install Python 3.10 or newer from https://www.python.org/downloads/"
   Write-Output "and tick 'Add python.exe to PATH' during setup. Nothing was installed."
-  exit 1
+  return
 }
 Write-Output "  Python: $py"
 & $py --version 2>&1 | Write-Output
@@ -59,4 +59,4 @@ if ($rc -eq 0) {
 } else {
   Write-Output "Installer exited with code $rc. Nothing was removed. Re-run this script to retry."
 }
-exit $rc
+return
