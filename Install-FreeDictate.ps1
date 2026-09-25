@@ -29,10 +29,18 @@ function Show-Audit {
   Write-Output "Python packages:"
   if ($py) { & $py -m pip show faster-whisper sounddevice numpy pyperclip pynput 2>&1 | Select-String "Name|Version|not found" | Write-Output }
   Write-Output ""
-  Write-Output "Startup Run key:"
+  Write-Output "Autostart (Run key, scheduled task, Startup folder):"
+  $found = @()
   $v = Get-ItemProperty -LiteralPath $RunPath -Name $RunName -ErrorAction SilentlyContinue
-  if ($null -eq $v) { Write-Output "  Not installed. No autostart entry." }
-  else { Write-Output "  Present: $($v.$RunName)" }
+  if ($null -ne $v -and $v.$RunName) { $found += "Run key $RunName = $($v.$RunName)" }
+  if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+    $st = Get-ScheduledTask -TaskName "FreeDictate" -ErrorAction SilentlyContinue
+    if ($st) { $found += "Scheduled task \FreeDictate state=$($st.State) trigger=$($st.Triggers[0].CimClass.CimClassName)" }
+  }
+  $lnk = Get-ChildItem -LiteralPath ([Environment]::GetFolderPath('Startup')) -Filter "FreeDictate*" -ErrorAction SilentlyContinue
+  if ($lnk) { $found += "Startup folder: $(($lnk | ForEach-Object Name) -join ', ')" }
+  if ($found) { $found | ForEach-Object { Write-Output "  $_" } }
+  else { Write-Output "  Not installed. No autostart entry." }
   Write-Output ""
   Write-Output "Protected apps: this script never touches audio routing, comms apps, or drivers."
   Write-Output "Result: audit done. No settings changed."
@@ -68,6 +76,18 @@ if ($Install) {
   & $py (Join-Path $Dir "freedictate.py") --preload
   Write-Output ""
   & $py (Join-Path $Dir "freedictate.py") --audit
+  # A scheduled task or Startup shortcut already starts the app. Adding a Run
+  # key on top would run two copies and paste every take twice.
+  $autostartElsewhere = $false
+  if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+    if (Get-ScheduledTask -TaskName "FreeDictate" -ErrorAction SilentlyContinue) { $autostartElsewhere = $true }
+  }
+  if (Get-ChildItem -LiteralPath ([Environment]::GetFolderPath('Startup')) -Filter "FreeDictate*" -ErrorAction SilentlyContinue) { $autostartElsewhere = $true }
+  if ($autostartElsewhere) {
+    Write-Output "Autostart already provided by a scheduled task or Startup shortcut. Run key left alone."
+    Write-Output "Changed: pip packages only. Unchanged: Run key, mic routing, audio apps, display settings."
+    exit 0
+  }
   if (-not (Test-Path -LiteralPath $BackupDir)) { New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null }
   $bak = Join-Path $BackupDir "freedictate-run-before-install.reg"
   reg export "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" $bak /y | Out-Null
