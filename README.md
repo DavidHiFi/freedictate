@@ -29,7 +29,7 @@ Grab the newest release from [github.com/DavidHiFi/freedictate/releases/latest](
 | `FreeDictate-<version>-Portable.zip` | Portable build. Extract anywhere and run `FreeDictate.exe`. |
 | `SHA256SUMS` | Checksums for the files above. |
 
-No Python, no dependencies: both builds are frozen executables that bundle everything.
+No Python, no dependencies: both builds are frozen executables that bundle everything, the Visual C++ runtime included, so nothing else needs installing. They run on 64-bit Windows 10 1809 or later; the window materials need Windows 11 22H2. GPU acceleration is optional: on a PC with an NVIDIA card, Settings → *Speech model* downloads NVIDIA's libraries in one click (only the NVIDIA driver is needed).
 
 ## Install
 
@@ -48,7 +48,7 @@ Everything lives in one window with seven pages:
 - **Dictation** — hotkey and mode, microphone with a live level test, sounds and volume, auto-stop on silence, vocabulary hints passed to the model, pause.
 - **Speech model** — pick a Whisper model: from *Tiny* (75 MB, fastest) to *Large v3 Turbo*, English-only or multilingual, CPU or NVIDIA GPU. A fallback model keeps dictation working while a new one downloads.
 - **Text and pasting** — filler removal, capitalization, end punctuation, voice commands ("new line", "new paragraph"), find-and-replace rules, output method (paste / Shift+Insert / type / clipboard only) and clipboard restore.
-- **Appearance** — ten themes plus *Match Windows*, the Windows accent colour, any installed font, and the window material: **Mica Alt, Mica, Acrylic** or solid, with a tint slider. Backdrops need Windows 11 22H2 and transparency turned on; otherwise you get the solid look automatically.
+- **Appearance** — ten themes plus *Match Windows*, the Windows accent colour, any installed font, and the window material: **Mica Alt, Mica, Acrylic** or solid, with a tint slider. Backdrops need Windows 11 22H2 and transparency turned on; otherwise you get the solid look automatically. The title bar can be FreeDictate's own or the standard Windows one; with the Windows title bar the material runs under it and matches the body.
 - **History** — searchable dictation history in SQLite on your PC, retention in days, clear or export. Transcribe audio and video files here too.
 - **General** — start at login (normal or elevated), update settings, prerelease channel, export/import settings.
 - **About** — version, licences, links.

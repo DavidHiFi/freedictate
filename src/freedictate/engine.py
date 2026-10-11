@@ -210,7 +210,15 @@ class Engine:
         self._download_cancel.set()
         if self.ms.status == "downloading":
             self.ms.status = "idle"
-            self.ms.wanted = self.ms.active
+            if self.ms.active:
+                self.ms.wanted = self.ms.active
+            else:
+                # Nothing active to fall back to (first run): an empty wanted
+                # would leave the "getting ready" state up forever. Show the
+                # retryable error instead.
+                self.ms.wanted = self.cfg["model"]
+                self.ms.error = "Download cancelled. Pick a model and press Download to try again."
+                self._set_state("error")
             self.emit("model", {})
 
     # ---------------------------------------------------------------- input
@@ -373,10 +381,15 @@ class Engine:
                                         "Turn on Run as administrator in Settings to paste there."})
 
     def _do_file(self, take: Take) -> None:
-        from faster_whisper import decode_audio
         self.emit("file", {"status": "working", "path": take.file})
-        data = decode_audio(take.file, sampling_rate=audio.RATE)
-        text = self._clean(self._decode(data))
+        try:
+            from faster_whisper import decode_audio
+            data = decode_audio(take.file, sampling_rate=audio.RATE)
+            text = self._clean(self._decode(data))
+        except Exception as e:
+            # The caller waits for on_text either way, or its banner never clears.
+            log.exception("Transcribing %s failed", take.file)
+            text = f"error: {e}"
         if take.on_text:
             take.on_text(text)
 

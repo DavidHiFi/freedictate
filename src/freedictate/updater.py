@@ -132,18 +132,35 @@ def install(file: Path) -> None:
     # the new files over the app folder (data\ and portable.txt untouched), and
     # starts FreeDictate again.
     app = paths.APP_DIR
+    # Write as UTF-8 with BOM: Windows PowerShell 5.1 reads BOM-less scripts as
+    # ANSI, which garbles non-ASCII paths (José, Désirée...). Single quotes in
+    # paths are escaped by doubling; -LiteralPath then treats them literally.
+    def q(s: Path) -> str:
+        return "'" + str(s).replace("'", "''") + "'"
     script = Path(tempfile.gettempdir()) / "FreeDictate-update" / "apply-portable.ps1"
     script.write_text(f"""
 $ErrorActionPreference = 'Stop'
-Wait-Process -Id {os.getpid()} -Timeout 30 -ErrorAction SilentlyContinue
-$stage = Join-Path $env:TEMP 'FreeDictate-update\\stage'
-Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
-Expand-Archive -LiteralPath '{file}' -DestinationPath $stage -Force
-$src = Get-ChildItem $stage -Directory | Select-Object -First 1
-if (-not (Test-Path (Join-Path $src.FullName 'FreeDictate.exe'))) {{ $src = Get-Item $stage }}
-Get-ChildItem $src.FullName | Where-Object {{ $_.Name -notin @('data', 'portable.txt') }} |
-  ForEach-Object {{ Copy-Item $_.FullName -Destination '{app}' -Recurse -Force }}
-Start-Process -FilePath (Join-Path '{app}' 'FreeDictate.exe')
-""", encoding="utf-8")
+$exe = Join-Path {q(app)} 'FreeDictate.exe'
+try {{
+    $p = Get-Process -Id {os.getpid()} -ErrorAction SilentlyContinue
+    if ($p -and -not $p.WaitForExit(30000)) {{
+        # Still shutting down: don't copy over a running exe, just make sure
+        # the old app is back in front. The update can be retried later.
+        Start-Process -FilePath $exe
+        exit
+    }}
+    $stage = Join-Path $env:TEMP 'FreeDictate-update\\stage'
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -LiteralPath {q(file)} -DestinationPath $stage -Force
+    $src = Get-ChildItem $stage -Directory | Select-Object -First 1
+    if (-not (Test-Path (Join-Path $src.FullName 'FreeDictate.exe'))) {{ $src = Get-Item $stage }}
+    Get-ChildItem $src.FullName | Where-Object {{ $_.Name -notin @('data', 'portable.txt') }} |
+        ForEach-Object {{ Copy-Item $_.FullName -Destination {q(app)} -Recurse -Force }}
+}} finally {{
+    if (-not (Get-Process -Name FreeDictate -ErrorAction SilentlyContinue)) {{
+        Start-Process -FilePath $exe
+    }}
+}}
+""", encoding="utf-8-sig")
     subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
                       "-File", str(script)], creationflags=_NO_WINDOW, close_fds=True)

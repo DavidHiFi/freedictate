@@ -295,6 +295,11 @@ class Combo(QComboBox):
         for key, text in items:
             self.addItem(text, key)
         idx = self.findData(value)
+        if idx < 0 and value not in ("", None):
+            # Keep an unknown saved value visible and current instead of
+            # silently showing (and later saving) the first item's value.
+            self.addItem(str(value), value)
+            idx = self.count() - 1
         self.setCurrentIndex(max(0, idx))
         self.blockSignals(False)
 

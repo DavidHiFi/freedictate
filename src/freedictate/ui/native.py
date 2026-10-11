@@ -24,6 +24,11 @@ user32.MonitorFromWindow.argtypes = [wt.HWND, wt.DWORD]
 user32.GetForegroundWindow.restype = wt.HWND
 dwmapi.DwmSetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
 dwmapi.DwmExtendFrameIntoClientArea.argtypes = [wt.HWND, ctypes.c_void_p]
+dwmapi.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
+user32.SetWindowPlacement.argtypes = [wt.HWND, ctypes.c_void_p]
+user32.GetWindowPlacement.argtypes = [wt.HWND, ctypes.c_void_p]
+user32.IsIconic.argtypes = [wt.HWND]
+user32.GetMonitorInfoW.argtypes = [wt.HMONITOR, ctypes.c_void_p]
 
 GWL_STYLE, GWL_EXSTYLE = -16, -20
 WS_CAPTION, WS_THICKFRAME, WS_SYSMENU = 0x00C00000, 0x00040000, 0x00080000
@@ -41,6 +46,8 @@ HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMR
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWA_BORDER_COLOR = 34
+DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR = 35, 36
+DWMWA_COLOR_NONE = 0xFFFFFFFE
 DWMWA_SYSTEMBACKDROP_TYPE = 38
 BACKDROP_VALUES = {"solid": 1, "mica": 2, "acrylic": 3, "mica_alt": 4}
 BUILD = sys.getwindowsversion().build
@@ -82,13 +89,29 @@ def set_corners(hwnd: int, small: bool = False) -> None:
     _attr(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, 3 if small else 2)
 
 
-def set_backdrop(hwnd: int, kind: str) -> bool:
+def set_backdrop(hwnd: int, kind: str, extend: bool = False) -> bool:
+    """Apply a system backdrop. ``extend`` is for windows that keep the Windows
+    title bar: the frame is extended over the client so the material runs
+    from the caption into the body."""
     if not backdrop_supported():
         return False
-    # Margins stay 0: a -1 "sheet of glass" makes DWM paint a dark caption band
-    # over the backdrop while the window is inactive (measured on 26200).
-    dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(MARGINS(0, 0, 0, 0)))
+    # Frameless windows keep margins at 0: a -1 "sheet of glass" makes DWM paint
+    # a dark caption band over the backdrop while the window is inactive
+    # (measured on 26200).
+    m = -1 if extend and kind != "solid" else 0
+    dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(MARGINS(m, m, m, m)))
     return _attr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, BACKDROP_VALUES.get(kind, 1)) == 0
+
+
+def _bgr(hex_color: str) -> int:
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return (b << 16) | (g << 8) | r
+
+
+def set_caption(hwnd: int, color: str | None, text: str) -> None:
+    """Windows title bar colours: ``color`` None lets the material show through."""
+    _attr(hwnd, DWMWA_CAPTION_COLOR, DWMWA_COLOR_NONE if color is None else _bgr(color))
+    _attr(hwnd, DWMWA_TEXT_COLOR, _bgr(text))
 
 
 def add_frame_styles(hwnd: int) -> None:
@@ -117,6 +140,57 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int]:
     r = wt.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(r))
     return r.left, r.top, r.right, r.bottom
+
+
+class _WINDOWPLACEMENT(ctypes.Structure):
+    _fields_ = [("length", wt.UINT), ("flags", wt.UINT), ("show", wt.UINT), ("min_pos", wt.POINT),
+                ("max_pos", wt.POINT), ("normal", wt.RECT)]
+
+
+def _placement(hwnd: int) -> _WINDOWPLACEMENT:
+    p = _WINDOWPLACEMENT()
+    p.length = ctypes.sizeof(p)
+    user32.GetWindowPlacement(hwnd, ctypes.byref(p))
+    return p
+
+
+def normal_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    """The window's current rect in the work-area coordinates WINDOWPLACEMENT
+    uses, or None while it is maximized or minimized."""
+    if user32.IsZoomed(hwnd) or user32.IsIconic(hwnd):
+        return None
+    left, top, right, bottom = window_rect(hwnd)
+    mon = user32.MonitorFromWindow(hwnd, 2)
+    mi = _MONITORINFO()
+    mi.cb = ctypes.sizeof(mi)
+    user32.GetMonitorInfoW(mon, ctypes.byref(mi))
+    dx, dy = mi.work.left - mi.mon.left, mi.work.top - mi.mon.top
+    return left - dx, top - dy, right - dx, bottom - dy
+
+
+def set_normal_rect(hwnd: int, rect: tuple[int, int, int, int]) -> None:
+    p = _placement(hwnd)
+    if (p.normal.left, p.normal.top, p.normal.right, p.normal.bottom) != rect:
+        p.normal = wt.RECT(*rect)
+        user32.SetWindowPlacement(hwnd, ctypes.byref(p))
+
+
+def visible_rect(hwnd: int) -> tuple[int, int, int, int]:
+    """Window bounds without the invisible resize borders a framed window has."""
+    r = wt.RECT()
+    if dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:  # EXTENDED_FRAME_BOUNDS
+        return window_rect(hwnd)
+    return r.left, r.top, r.right, r.bottom
+
+
+def set_visible_rect(hwnd: int, rect: tuple[int, int, int, int]) -> None:
+    """Place a window so its visible bounds are ``rect``."""
+    wl, wtop, wr, wb = window_rect(hwnd)
+    vl, vt, vr, vb = visible_rect(hwnd)
+    left, top = rect[0] - (vl - wl), rect[1] - (vt - wtop)
+    width = rect[2] - rect[0] + (vl - wl) + (wr - vr)
+    height = rect[3] - rect[1] + (vt - wtop) + (wb - vb)
+    user32.SetWindowPos(hwnd, None, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE)
 
 
 def is_zoomed(hwnd: int) -> bool:

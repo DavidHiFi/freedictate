@@ -13,6 +13,12 @@ VERSION = re.search(r'__version__ = "([^"]+)"', (SRC / "freedictate" / "__init__
 datas = [(str(ROOT / "assets"), "assets")]
 datas += collect_data_files("faster_whisper")          # Silero VAD model
 binaries = collect_dynamic_libs("ctranslate2") + collect_dynamic_libs("onnxruntime")
+# onnxruntime imports MSVCP140_1.dll, which PyInstaller only bundles inside
+# PySide6\. Put the VC++ runtime extras next to python313.dll so a PC without
+# the Visual C++ redistributable still loads them (measured with pefile).
+import PySide6  # noqa: E402
+_qt = Path(PySide6.__file__).parent
+binaries += [(str(_qt / n), ".") for n in ("MSVCP140_1.dll", "MSVCP140_2.dll") if (_qt / n).exists()]
 
 a = Analysis(
     [str(ROOT / "packaging" / "launcher.py")],

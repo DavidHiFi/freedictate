@@ -61,7 +61,13 @@ def ensure() -> None:
 def exe_command() -> list[str]:
     """Command line that starts this FreeDictate (used for autostart and restarts)."""
     if FROZEN:
-        return [sys.executable]
-    exe = Path(sys.executable)
-    pyw = exe.with_name("pythonw.exe")
-    return [str(pyw if pyw.exists() else exe), "-m", "freedictate"]
+        cmd = [sys.executable]
+    else:
+        exe = Path(sys.executable)
+        pyw = exe.with_name("pythonw.exe")
+        cmd = [str(pyw if pyw.exists() else exe), "-m", "freedictate"]
+    if _portable and not (APP_DIR / "portable.txt").exists():
+        # Started with the flag only: a restart would otherwise come back in
+        # installed mode and read %APPDATA%.
+        cmd.append("--portable")
+    return cmd

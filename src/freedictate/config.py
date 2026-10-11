@@ -42,6 +42,7 @@ DEFAULTS: dict[str, Any] = {
     "backdrop": "mica_alt",         # mica_alt | mica | acrylic | solid
     "tint": 65,                     # 0-100, how much theme colour covers the backdrop
     "backdrop_when_inactive": False,
+    "titlebar": "custom",           # custom | windows
     "reduce_motion": False,
     # system
     "run_elevated": False,
@@ -72,6 +73,7 @@ CHOICES: dict[str, tuple] = {
     "overlay_position": ("bottom", "top"),
     "accent_source": ("theme", "windows"),
     "backdrop": ("mica_alt", "mica", "acrylic", "solid"),
+    "titlebar": ("custom", "windows"),
     "device": ("auto", "cpu", "cuda"),
     "compute_type": ("auto", "int8", "int8_float16", "float16", "float32"),
 }
@@ -89,6 +91,12 @@ _OLD_BACKDROP = {"Acrylic": "acrylic", "Frosted glass": "acrylic", "Mica": "mica
 def _coerce(key: str, value: Any) -> Any:
     default = DEFAULTS[key]
     if isinstance(default, bool):
+        if isinstance(value, str):     # an imported "false" must not become True
+            v = value.strip().lower()
+            if v in ("true", "1", "yes", "on"):
+                return True
+            if v in ("false", "0", "no", "off", ""):
+                return False
         return bool(value)
     if isinstance(default, (int, float)) and not isinstance(default, bool):
         try:
@@ -110,6 +118,10 @@ def _coerce(key: str, value: Any) -> Any:
                     for r in value if isinstance(r, dict) and str(r.get("find", "")).strip()]
         return list(default)
     return value
+
+
+def _is_legacy(raw: dict) -> bool:
+    return "beeps" in raw or "auto_paste" in raw or "paste_delay" in raw
 
 
 def migrate_legacy(old: dict) -> dict:
@@ -160,7 +172,7 @@ class Config:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
                 if not isinstance(raw, dict):
                     raise ValueError("settings file is not a JSON object")
-                if "beeps" in raw or "auto_paste" in raw or "paste_delay" in raw:
+                if _is_legacy(raw):
                     raw = migrate_legacy(raw)   # v1/v2 settings keep their meaning
             except (OSError, ValueError) as e:
                 log.warning("Settings unreadable (%s); keeping a copy and using defaults.", e)
@@ -179,9 +191,15 @@ class Config:
         with self._lock:
             text = json.dumps(self._data, indent=2, ensure_ascii=False) + "\n"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, self.path)
+        # A unique temp name: two threads saving at once must not clobber
+        # each other's file, and an antivirus lock on the target must not
+        # leave junk behind.
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, self.path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def __getitem__(self, key: str) -> Any:
         with self._lock:
@@ -207,12 +225,17 @@ class Config:
                     changed.add(k)
         if changed:
             if save:
-                self.save()
-            for fn in list(self._listeners):
                 try:
-                    fn(changed)
-                except Exception:
-                    log.exception("Settings listener failed")
+                    self.save()
+                except OSError:
+                    # A locked or read-only settings file must not stop the
+                    # change from taking effect for this session.
+                    log.exception("Settings could not be saved to %s", self.path)
+        for fn in list(self._listeners):
+            try:
+                fn(changed)
+            except Exception:
+                log.exception("Settings listener failed")
         return changed
 
     def __setitem__(self, key: str, value: Any) -> None:
@@ -235,6 +258,6 @@ class Config:
         raw = json.loads(source.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("Not a FreeDictate settings file.")
-        if "beeps" in raw or "auto_paste" in raw:
+        if _is_legacy(raw):
             raw = migrate_legacy(raw)
         return self.update({k: v for k, v in raw.items() if k in DEFAULTS})

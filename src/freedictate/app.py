@@ -29,6 +29,7 @@ class Bus(QObject):
     gpu_progress = Signal(int, int)
     gpu_status = Signal(str)                   # "", "downloading", "done", "error: ..."
     file_result = Signal(str, str)             # path, text or "error: ..."
+    history_changed = Signal()                 # a dictation was added on a worker thread
     notify = Signal(str, str, bool)            # title, text, error
     quit_requested = Signal()                  # worker threads ask the GUI thread to quit
 
@@ -92,6 +93,9 @@ class App(QObject):
     def _on_config_change(self, keys: set[str]) -> None:
         if keys & {"theme", "font", "backdrop", "tint", "backdrop_when_inactive", "reduce_motion", "accent_source"}:
             self.apply_look()
+        if "titlebar" in keys:
+            # Framed and frameless are different native windows; build a new one.
+            QTimer.singleShot(0, self._rebuild_settings)
         if "history_days" in keys:
             self.history.prune(self.cfg["history_days"])
         if keys & {"hotkey", "hotkey_mode"}:
@@ -180,6 +184,7 @@ class App(QObject):
                 self.overlay.flash("Copied to clipboard")
             elif data.get("outcome") == "blocked":
                 self.overlay.flash("Admin window: on clipboard", 2.4)
+            self.bus.history_changed.emit()   # history.add ran on the transcriber thread
         if self.settings_window is not None:
             self.settings_window.engine_event(kind, data)
 
@@ -205,6 +210,31 @@ class App(QObject):
         w.activateWindow()
         # Windows refuses focus to a background process unless it was the last input target.
         native.user32.SetForegroundWindow(int(w.winId()))
+
+    def _rebuild_settings(self) -> None:
+        old = self.settings_window
+        if old is None:
+            return
+        visible = old.isVisible() and not old.isMinimized()
+        maximized = old.isMaximized()
+        bounds = native.visible_rect(old.hwnd())
+        page = self.cfg["window_page"]
+        scroll = old.stack.currentWidget().verticalScrollBar().value()
+        old.dispose()
+        old.close()
+        old.deleteLater()
+        self.settings_window = None
+        if visible:
+            self.show_settings(page)
+            new = self.settings_window
+            if maximized:
+                new.showMaximized()
+            else:
+                # Keep the window's visible edges where they were; only the
+                # title bar inside them changes.
+                native.set_visible_rect(new.hwnd(), bounds)
+            bar = new.stack.currentWidget().verticalScrollBar()
+            QTimer.singleShot(0, lambda: bar.setValue(scroll))
 
     def pick_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -250,17 +280,18 @@ class App(QObject):
                 else:
                     msg = f"FreeDictate {rel.version} is available."
                 self.update_release = rel
-                self.bus.update_status.emit(msg, rel)
-                if rel and not manual:
-                    self.bus.notify.emit(
-                        "An update is ready",
-                        f"FreeDictate {rel.version} is available. Open Settings to install it.", False)
             except Exception as e:
                 log.warning("Update check failed: %s", e)
-                self.bus.update_status.emit("Couldn't reach GitHub to check for updates. Check your connection "
-                                            "and try again." if manual else "", None)
-            finally:
-                self.update_busy = False
+                msg = ("Couldn't reach GitHub to check for updates. Check your connection "
+                       "and try again." if manual else "")
+                rel = None
+            # Free the button before the GUI thread sees the result, not after.
+            self.update_busy = False
+            self.bus.update_status.emit(msg, rel)
+            if rel and not manual:
+                self.bus.notify.emit(
+                    "An update is ready",
+                    f"FreeDictate {rel.version} is available. Open Settings to install it.", False)
 
         threading.Thread(target=work, daemon=True, name="update-check").start()
 
@@ -279,9 +310,8 @@ class App(QObject):
                 self.bus.quit_requested.emit()
             except Exception as e:
                 log.exception("Update failed")
+                self.update_busy = False   # before the GUI sees the failure
                 self.bus.update_status.emit(f"The update didn't install: {e}", rel)
-            finally:
-                self.update_busy = False
 
         threading.Thread(target=work, daemon=True, name="update-install").start()
 
@@ -345,14 +375,19 @@ class App(QObject):
 # ----------------------------------------------------------------- startup
 
 def _signal_running(message: str) -> bool:
+    """True when a copy is already running and got the message.
+
+    A copy running as administrator owns its pipe with a High integrity label;
+    a normal launch can't connect to it (SocketAccessError) but must not start
+    a second copy over it either."""
     sock = QLocalSocket()
     sock.connectToServer(SERVER_NAME)
-    if not sock.waitForConnected(400):
-        return False
-    sock.write(message.encode())
-    sock.waitForBytesWritten(400)
-    sock.disconnectFromServer()
-    return True
+    if sock.waitForConnected(400):
+        sock.write(message.encode())
+        sock.waitForBytesWritten(400)
+        sock.disconnectFromServer()
+        return True
+    return sock.error() == QLocalSocket.LocalSocketError.SocketAccessError
 
 
 def _wait_for_exit(pid: int) -> None:

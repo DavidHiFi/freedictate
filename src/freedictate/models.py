@@ -143,6 +143,10 @@ def download(name: str, progress: ProgressFn | None = None, cancel: threading.Ev
             if cancel is not None and cancel.is_set():
                 raise InterruptedError("Download cancelled")
             path = Path(hf_hub_download(repo, s.rfilename, cache_dir=cache_dir(), revision=info.sha)).parent
+        # model.bin is the last and largest file, so the loop's check can't
+        # cover it: a cancel during it must still count as cancelled.
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("Download cancelled")
     finally:
         stop.set()
     if path is None or not (path / "model.bin").exists():

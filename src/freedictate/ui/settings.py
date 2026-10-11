@@ -80,7 +80,7 @@ class Page(QScrollArea):
 
 class SettingsWindow(FluentWindow):
     def __init__(self, app):
-        super().__init__(APP_NAME)
+        super().__init__(APP_NAME, native_titlebar=app.cfg["titlebar"] == "windows")
         self.app, self.cfg, self.engine, self.history = app, app.cfg, app.engine, app.history
         self.setMinimumSize(820, 560)
         self._meter = audio.LevelMeter()
@@ -115,7 +115,10 @@ class SettingsWindow(FluentWindow):
         app.bus.gpu_progress.connect(self._on_gpu_progress)
         app.bus.gpu_status.connect(self._on_gpu_status)
         app.bus.file_result.connect(self._on_file_result)
-        self.history.on_change(lambda: QTimer.singleShot(0, self._history_changed))
+        # History writes happen on the transcriber thread; a QTimer from there
+        # would never fire, so the app re-emits a queued signal instead.
+        app.bus.history_changed.connect(self._history_changed)
+        self._disposed = False
 
         for i, (key, _, _) in enumerate(PAGES[:9], start=1):
             QShortcut(QKeySequence(f"Ctrl+{i}"), self, activated=lambda k=key: self.go(k))
@@ -214,12 +217,24 @@ class SettingsWindow(FluentWindow):
     def save_geometry(self) -> None:
         self.cfg.update({"window_geometry": bytes(self.saveGeometry().toBase64()).decode()})
 
+    def dispose(self) -> None:
+        """Detach from the app before the window is replaced (title bar switch)."""
+        self._disposed = True
+        bus = self.app.bus
+        for sig, slot in ((bus.update_status, self._on_update_status), (bus.update_progress, self._on_update_progress),
+                          (bus.gpu_progress, self._on_gpu_progress), (bus.gpu_status, self._on_gpu_status),
+                          (bus.file_result, self._on_file_result), (bus.history_changed, self._history_changed)):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+
     def closeEvent(self, e):
         self._stop_meter()
         if self.hotkey_edit._timer.isActive():
             self.hotkey_edit.cancel()
         self.save_geometry()
-        if not self.cfg["first_run_done"]:
+        if not self.cfg["first_run_done"] and not self._disposed:
             self.cfg["first_run_done"] = True
             self.app.notify("FreeDictate keeps running in the tray",
                             f"Hold {hotkeys.label(self.cfg['hotkey'])} anywhere to dictate.")
@@ -515,7 +530,7 @@ class SettingsWindow(FluentWindow):
         threads.setValue(self.cfg["cpu_threads"])
         threads.setSpecialValueText("Automatic")
         threads.setFixedWidth(130)
-        threads.editingFinished.connect(lambda: self.cfg.update({"cpu_threads": threads.value()}))
+        threads.valueChanged.connect(lambda v: self.cfg.update({"cpu_threads": v}))
         card.add(Row("Processor threads", "How many CPU cores the model may use.", threads))
         vad = Toggle(self.cfg["vad"])
         vad.toggled.connect(lambda on: self.cfg.update({"vad": on}))
@@ -543,7 +558,7 @@ class SettingsWindow(FluentWindow):
                 act.setText("Use" if have else "Download")
                 act.setEnabled(not using)
                 act.setProperty("kind", "" if have else "primary")
-            delete.setVisible(have and not using)
+            delete.setVisible(have and not using and not (chosen and ms.status in ("downloading", "loading")))
             act.style().unpolish(act)
             act.style().polish(act)
             act.setVisible(not using)
@@ -553,9 +568,14 @@ class SettingsWindow(FluentWindow):
         ms = self.engine.ms
         if ms.status == "downloading" and ms.wanted == name:
             self.engine.cancel_download()
-            self.cfg["model"] = ms.active or self.cfg["model"]
+            if ms.active:
+                self.cfg["model"] = ms.active
         else:
-            self.cfg["model"] = name
+            if not self.cfg.update({"model": name}):
+                # Same model as configured (e.g. retrying after a failed
+                # download): cfg.update reported no change, so ask the engine
+                # directly or the button would do nothing until a restart.
+                self.engine.ensure_model(force=True)
         self._refresh_models()
         self.refresh_status()
 
@@ -564,7 +584,10 @@ class SettingsWindow(FluentWindow):
         if QMessageBox.question(self, "Delete model", f"Delete {info.title} from this PC? "
                                 f"You can download it again later.") != QMessageBox.StandardButton.Yes:
             return
-        models.delete(name)
+        if not models.delete(name):
+            QMessageBox.information(self, "Delete model",
+                                    f"{info.title} is in use right now, so it can't be deleted. "
+                                    f"Switch to another model first.")
         self._refresh_models()
 
     def _refresh_gpu(self) -> None:
@@ -588,7 +611,14 @@ class SettingsWindow(FluentWindow):
             self.app.cancel_gpu()
             return
         if models.gpu_libs_present():
-            models.remove_gpu_libs()
+            try:
+                models.remove_gpu_libs()
+            except OSError:
+                # The DLLs are loaded into this process while the model runs
+                # on the GPU; Windows won't let go of them until restart.
+                self.gpu_row.set_note("FreeDictate is using the graphics card right now. "
+                                      "Restart it, then remove GPU support.", "danger")
+                return
             self.gpu_row.set_note("Removed. FreeDictate uses the processor after a restart.", "value")
             self._refresh_gpu()
             return
@@ -754,6 +784,10 @@ class SettingsWindow(FluentWindow):
                             "Windows normally swaps the material for a flat colour when you switch to another window.",
                             keep)
         card.add(self.keep_row)
+        tb = Segmented([("custom", "FreeDictate"), ("windows", "Windows")], cfg["titlebar"])
+        tb.changed.connect(lambda k: cfg.update({"titlebar": k}))
+        card.add(Row("Title bar", "Windows uses the standard title bar, buttons and menu. The material runs "
+                     "under it, so the body is left untinted to match.", tb))
         self._update_backdrop_note()
 
         card = page.section("Motion")
@@ -777,7 +811,10 @@ class SettingsWindow(FluentWindow):
             row.set_note("Transparency effects are off in Windows Settings > Personalization > Colors.")
         else:
             row.set_note("")
-        self.tint_row.setEnabled(not solid)
+        native_tb = cfg["titlebar"] == "windows"
+        self.tint_row.setEnabled(not solid and not native_tb)
+        self.tint_row.set_note("The Windows title bar can't be tinted, so the tint is off to keep them matched."
+                               if native_tb and not solid else "", "sub")
         self.keep_row.setEnabled(not solid)
 
     # ------------------------------------------------------------ history
@@ -908,6 +945,13 @@ class SettingsWindow(FluentWindow):
     def _on_file_result(self, path: str, text: str) -> None:
         self._clear_banner_actions()
         name = Path(path).name
+        if text.startswith("error:"):
+            self.file_banner.text.setText(f"<b>{name}</b> couldn't be transcribed: {text[6:].strip()}")
+            close = button("", "flat", icon="x")
+            close.setAccessibleName("Close")
+            close.clicked.connect(self.file_banner.hide)
+            self.file_banner.actions.addWidget(close)
+            return
         if not text.strip():
             self.file_banner.text.setText(f"No speech found in <b>{name}</b>.")
             return
@@ -1010,6 +1054,10 @@ class SettingsWindow(FluentWindow):
         reset = button("Reset", "danger")
         reset.clicked.connect(self._reset_settings)
         card.add(Row("Reset all settings", "History and downloaded models are kept.", reset))
+        old = button("Import from FreeDictate 2…", "", icon="file")
+        old.clicked.connect(self._import_v2)
+        card.add(Row("Coming from FreeDictate 2?",
+                     "Point this at your old FreeDictate folder to bring over its settings and history.", old))
 
     @Slot(str, object)
     def _on_update_status(self, msg: str, rel) -> None:
@@ -1062,6 +1110,37 @@ class SettingsWindow(FluentWindow):
             return
         self._rebuild()
 
+    def _import_v2(self) -> None:
+        """Pull settings and history out of a v1/v2 FreeDictate folder
+        (config.json and transcripts.log next to freedictate.py)."""
+        folder = QFileDialog.getExistingDirectory(self, "Choose your old FreeDictate folder")
+        if not folder:
+            return
+        old = Path(folder)
+        notes = []
+        cfg_file = old / "config.json"
+        if cfg_file.exists():
+            try:
+                self.cfg.import_from(cfg_file)
+                notes.append("settings imported")
+            except Exception as e:
+                notes.append(f"settings not readable ({e})")
+        log_file = old / "transcripts.log"
+        if log_file.exists():
+            try:
+                n = self.history.import_legacy_log(log_file)
+                notes.append(f"{n} dictations added to history")
+            except Exception as e:
+                notes.append(f"history not readable ({e})")
+        if not notes:
+            QMessageBox.information(self, "Import from FreeDictate 2",
+                                    "No config.json or transcripts.log in that folder.")
+            return
+        if "settings imported" in notes:
+            self._rebuild()
+            self.reload_history()
+        QMessageBox.information(self, "Import from FreeDictate 2", "; ".join(notes).capitalize() + ".")
+
     def _reset_settings(self) -> None:
         if QMessageBox.question(self, "Reset settings", "Put every setting back to its default?") \
                 == QMessageBox.StandardButton.Yes:
@@ -1072,6 +1151,7 @@ class SettingsWindow(FluentWindow):
         """Rebuild the pages so every control shows the new values."""
         page = self.cfg["window_page"]
         geo = self.saveGeometry()
+        self.dispose()          # don't leave bus/history listeners on a dead window
         self.app.settings_window = None
         self.close()
         self.deleteLater()
