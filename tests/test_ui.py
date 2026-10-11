@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 import pytest
+from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication, QSlider, QStyle, QStyleOptionSlider
 
 from freedictate import paths
@@ -18,6 +19,7 @@ from freedictate.history import History
 from freedictate.ui import native, theme
 from freedictate.ui import settings as settings_mod
 from freedictate.ui.settings import SettingsWindow
+from freedictate.ui.window import FluentWindow
 
 
 @pytest.fixture(scope="module")
@@ -139,6 +141,51 @@ def test_tint_stays_usable_with_windows_titlebar(qapp, env):
     finally:
         win.dispose()
         win.close()
+
+
+def test_caption_matches_tinted_body_with_windows_titlebar(qapp, env, monkeypatch):
+    """The caption gets the tint composed over the material tone measured off
+    the caption strip; a tint change recomposes from the cached tone without
+    re-measuring, and solid/zero tints keep their exact captions."""
+    calls, measured = [], []
+    monkeypatch.setattr(native, "set_caption", lambda h, c, t: calls.append(c))
+    monkeypatch.setattr(native, "visible_rect", lambda h: (0, 100, 800, 500))
+    monkeypatch.setattr(native, "client_origin", lambda h: (0, 131))  # caption is 31px
+    monkeypatch.setattr(native, "screen_patch_median", lambda rect: measured.append(rect) or (73, 76, 95))
+
+    win = FluentWindow("caption-test", native_titlebar=True)
+    monkeypatch.setattr(native, "point_window", lambda x, y: win.hwnd())
+    win.show()
+    pump(qapp, 2)
+    pal = theme.current()
+    try:
+        win._backdrop, win._tint = "acrylic", 0.75
+        win._apply_caption()
+        assert calls[-1] is None, "raw material until the tone is measured"
+        win._measure_caption_tone()          # the deferred step, run inline
+        assert len(measured) == 1
+        m_hex = "#494c5f"                    # the stubbed strip median
+        assert calls[-1] == theme.mix(m_hex, pal.bg, 0.75)
+
+        win._tint = 0.30                     # slider drag: no re-measure
+        win._apply_caption()
+        assert calls[-1] == theme.mix(m_hex, pal.bg, 0.30)
+        assert len(measured) == 1
+
+        win._backdrop = "solid"
+        win._apply_caption()
+        assert calls[-1] == pal.bg
+        win._backdrop, win._tint = "acrylic", 0.0
+        win._apply_caption()
+        assert calls[-1] is None
+
+        # let the deferred measurement timer from the first pass fire safely
+        loop = QEventLoop()
+        QTimer.singleShot(800, loop.quit)
+        loop.exec()
+    finally:
+        win.deleteLater()
+        pump(qapp, 2)
 
 
 def test_history_reloads_deferred_and_reuses_cards(qapp, env):

@@ -142,6 +142,9 @@ class FluentWindow(QWidget):
         self._tint = 0.65
         self._keep_active = False
         self._chrome_applied = False
+        self._cap_m: tuple[int, int, int] | None = None
+        self._cap_m_key: tuple[str, bool] | None = None
+        self._cap_measuring = False
         self._root = QVBoxLayout(self)
         self._root.setContentsMargins(0, 0, 0, 0)
         self._root.setSpacing(0)
@@ -186,10 +189,70 @@ class FluentWindow(QWidget):
         # Qt paints the Windows caption in the palette's window colour on show
         # and on activation, which hid the material under the title bar
         # (measured: a flat #1e1e2e caption over Mica). This runs after Qt's pass.
-        if not self._native_tb or not self.isVisible():
+        if not self._native_tb or not self.isVisible() or self.isMinimized():
             return
         pal = theme.current()
-        native.set_caption(self.hwnd(), pal.bg if self._backdrop == "solid" else None, pal.text)
+        h = self.hwnd()
+        if self._backdrop == "solid" or self._tint >= 1.0:
+            # The body paints pal.bg opaque, so the caption is exactly that.
+            native.set_caption(h, pal.bg, pal.text)
+            return
+        if self._tint <= 0.0:
+            native.set_caption(h, None, pal.text)
+            return
+        # A material runs under the caption raw, while the body gets the tint
+        # over it — the caption looked lighter than the window (measured: up to
+        # 32/255 on acrylic at 75% tint). DWM accepts a caption colour, so feed
+        # it the tint composed over the material tone measured off the strip.
+        # DWMWA_CAPTION_COLOR does not read back on current builds; the tone
+        # comes from a screen grab instead, cached per material and dark mode.
+        native.set_caption(h, self._caption_tone(pal), pal.text)
+
+    def _caption_tone(self, pal) -> str | None:
+        """Tint composed over the measured material tone, or None until the
+        measurement lands (the caption then shows the raw material, as before)."""
+        key = (self._backdrop, pal.dark)
+        if self._cap_m is not None and self._cap_m_key == key:
+            return theme.mix("#{:02x}{:02x}{:02x}".format(*self._cap_m), pal.bg, self._tint)
+        self._cap_m, self._cap_m_key = None, key
+        self._schedule_caption_measure()
+        return None
+
+    def _schedule_caption_measure(self) -> None:
+        if self._cap_measuring:
+            return
+        self._cap_measuring = True
+        native.set_caption(self.hwnd(), None, theme.current().text)  # raw material in the strip
+        # A DWM backdrop switch animates for a few hundred ms; measure after it.
+        QTimer.singleShot(600, self._measure_caption_tone)
+
+    def _measure_caption_tone(self) -> None:
+        self._cap_measuring = False
+        if not self._native_tb or not self.isVisible() or self.isMinimized():
+            return
+        rect = self._caption_strip_rect()
+        if rect is None:
+            return
+        x, y = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+        if native.point_window(x, y) != self.hwnd():
+            return  # covered by another window: retry on the next activation change
+        m = native.screen_patch_median(rect)
+        if m is None:
+            return
+        self._cap_m = m
+        self._apply_caption()
+
+    def _caption_strip_rect(self) -> tuple[int, int, int, int] | None:
+        """Caption band clear of the icon, the title text and the buttons."""
+        vl, vt, vr, _vb = native.visible_rect(self.hwnd())
+        cap_h = native.client_origin(self.hwnd())[1] - vt
+        if cap_h <= 4:
+            return None
+        dpr = self.devicePixelRatioF()
+        x0, x1 = vl + round(150 * dpr), vr - round(170 * dpr)
+        if x1 - x0 < round(60 * dpr):
+            return None  # too narrow for a band that avoids the chrome
+        return x0, vt + 2, x1, vt + cap_h - 2
 
     def showEvent(self, e):
         super().showEvent(e)

@@ -29,6 +29,30 @@ user32.SetWindowPlacement.argtypes = [wt.HWND, ctypes.c_void_p]
 user32.GetWindowPlacement.argtypes = [wt.HWND, ctypes.c_void_p]
 user32.IsIconic.argtypes = [wt.HWND]
 user32.GetMonitorInfoW.argtypes = [wt.HMONITOR, ctypes.c_void_p]
+user32.WindowFromPoint.restype = wt.HWND
+user32.WindowFromPoint.argtypes = [wt.POINT]
+user32.ClientToScreen.restype = wt.BOOL
+user32.ClientToScreen.argtypes = [wt.HWND, ctypes.POINTER(wt.POINT)]
+user32.GetDC.restype = wt.HDC
+user32.GetDC.argtypes = [wt.HWND]
+user32.ReleaseDC.restype = ctypes.c_int
+user32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+
+gdi32 = ctypes.WinDLL("gdi32")
+SRCCOPY = 0x00CC0020
+gdi32.CreateCompatibleDC.restype = wt.HDC
+gdi32.CreateCompatibleDC.argtypes = [wt.HDC]
+gdi32.CreateCompatibleBitmap.restype = wt.HBITMAP
+gdi32.CreateCompatibleBitmap.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int]
+gdi32.SelectObject.restype = wt.HGDIOBJ
+gdi32.SelectObject.argtypes = [wt.HDC, wt.HGDIOBJ]
+gdi32.BitBlt.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                         wt.HDC, ctypes.c_int, ctypes.c_int, wt.DWORD]
+gdi32.GetDIBits.argtypes = [wt.HDC, wt.HBITMAP, wt.UINT, wt.UINT, ctypes.c_void_p, ctypes.c_void_p, wt.UINT]
+gdi32.DeleteObject.restype = wt.BOOL
+gdi32.DeleteObject.argtypes = [wt.HGDIOBJ]
+gdi32.DeleteDC.restype = wt.BOOL
+gdi32.DeleteDC.argtypes = [wt.HDC]
 
 GWL_STYLE, GWL_EXSTYLE = -16, -20
 WS_CAPTION, WS_THICKFRAME, WS_SYSMENU = 0x00C00000, 0x00040000, 0x00080000
@@ -208,3 +232,53 @@ def foreground_work_area() -> tuple[int, int, int, int]:
     mi.cb = ctypes.sizeof(mi)
     user32.GetMonitorInfoW(mon, ctypes.byref(mi))
     return mi.work.left, mi.work.top, mi.work.right, mi.work.bottom
+
+
+class _BMIH(ctypes.Structure):
+    _fields_ = [("sz", wt.DWORD), ("w", ctypes.c_long), ("h", ctypes.c_long),
+                ("planes", wt.WORD), ("bits", wt.WORD), ("comp", wt.DWORD),
+                ("szimg", wt.DWORD), ("xppm", ctypes.c_long), ("yppm", ctypes.c_long),
+                ("used", wt.DWORD), ("imp", wt.DWORD)]
+
+
+def point_window(x: int, y: int) -> int:
+    """Handle of the top-level window under a physical screen point."""
+    return user32.WindowFromPoint(wt.POINT(int(x), int(y))) or 0
+
+
+def client_origin(hwnd: int) -> tuple[int, int]:
+    """Screen position of the client area's top-left, physical pixels."""
+    pt = wt.POINT(0, 0)
+    user32.ClientToScreen(hwnd, ctypes.byref(pt))
+    return pt.x, pt.y
+
+
+def screen_patch_median(rect: tuple[int, int, int, int]) -> tuple[int, int, int] | None:
+    """Median RGB of a physical-pixel screen rectangle, None on failure.
+
+    Reads what DWM actually composited there — the only way to see the tone a
+    system backdrop was given."""
+    l, t, r, b = (int(v) for v in rect)
+    w, h = r - l, b - t
+    if w <= 0 or h <= 0:
+        return None
+    hdc = user32.GetDC(None)
+    if not hdc:
+        return None
+    mem = gdi32.CreateCompatibleDC(hdc)
+    bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
+    gdi32.SelectObject(mem, bmp)
+    gdi32.BitBlt(mem, 0, 0, w, h, hdc, l, t, SRCCOPY)
+    bi = _BMIH(ctypes.sizeof(_BMIH), w, -h, 1, 32, 0)
+    buf = (ctypes.c_ubyte * (w * h * 4))()
+    ok = gdi32.GetDIBits(mem, bmp, 0, h, buf, ctypes.byref(bi), 0)
+    gdi32.DeleteObject(bmp)
+    gdi32.DeleteDC(mem)
+    user32.ReleaseDC(None, hdc)
+    if not ok:
+        return None
+    chans = ([], [], [])
+    for i in range(0, len(buf), 4):
+        for c in range(3):
+            chans[c].append(buf[i + 2 - c])  # scanlines are BGRA
+    return tuple(sorted(ch)[len(ch) // 2] for ch in chans)
