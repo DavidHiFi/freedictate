@@ -88,6 +88,7 @@ class SettingsWindow(FluentWindow):
         self._meter_timer.setInterval(33)
         self._meter_timer.timeout.connect(self._meter_tick)
         self._history_limit = 150
+        self._history_stale = True
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(180)
@@ -181,8 +182,10 @@ class SettingsWindow(FluentWindow):
             b.setChecked(k == key)
         self.stack.setCurrentWidget(self.pages[key])
         self.cfg.update({"window_page": key})
-        if key == "history":
-            self.reload_history()
+        if key == "history" and self._history_stale:
+            # Paint the page first, then fill it: building the cards inline
+            # blocked every switch to the tab for a noticeable beat.
+            QTimer.singleShot(0, self.reload_history)
         if key == "models":
             self._refresh_models()
         if key != "dictation":
@@ -786,8 +789,8 @@ class SettingsWindow(FluentWindow):
         card.add(self.keep_row)
         tb = Segmented([("custom", "FreeDictate"), ("windows", "Windows")], cfg["titlebar"])
         tb.changed.connect(lambda k: cfg.update({"titlebar": k}))
-        card.add(Row("Title bar", "Windows uses the standard title bar, buttons and menu. The material runs "
-                     "under it, so the body is left untinted to match.", tb))
+        card.add(Row("Title bar", "Windows uses the standard title bar, buttons and menu. Windows can't tint "
+                     "it, so it keeps the raw material while the body takes the tint.", tb))
         self._update_backdrop_note()
 
         card = page.section("Motion")
@@ -812,8 +815,9 @@ class SettingsWindow(FluentWindow):
         else:
             row.set_note("")
         native_tb = cfg["titlebar"] == "windows"
-        self.tint_row.setEnabled(not solid and not native_tb)
-        self.tint_row.set_note("The Windows title bar can't be tinted, so the tint is off to keep them matched."
+        self.tint_row.setEnabled(not solid)
+        self.tint_row.set_note("The Windows title bar keeps the raw material: Windows can't tint it. "
+                               "The tint covers the body."
                                if native_tb and not solid else "", "sub")
         self.keep_row.setEnabled(not solid)
 
@@ -877,14 +881,18 @@ class SettingsWindow(FluentWindow):
     def _history_changed(self) -> None:
         if self.isVisible() and self.stack.currentWidget() is self.pages["history"]:
             self.reload_history()
+        else:
+            # Rebuild on the next visit instead of on every write.
+            self._history_stale = True
 
     def _more_history(self) -> None:
         self._history_limit += 150
         self.reload_history()
 
     def reload_history(self) -> None:
-        if not hasattr(self, "hist_box"):
+        if not hasattr(self, "hist_box") or getattr(self, "_disposed", False):
             return
+        self._history_stale = False
         q = self.search.text()
         st = self.history.stats()
         if st["count"]:
@@ -897,12 +905,19 @@ class SettingsWindow(FluentWindow):
         entries = self.history.search(q, limit=self._history_limit)
         total = self.history.count(q)
         self.hist_holder.setUpdatesEnabled(False)
-        while self.hist_box.count():
-            w = self.hist_box.takeAt(0).widget()
+        # Rebind the surviving cards to the new entries; tear down only the
+        # tail and build only the growth. Deleting and recreating every card
+        # restyled ~150 frames per keystroke and per dictation.
+        while self.hist_box.count() > len(entries):
+            w = self.hist_box.takeAt(self.hist_box.count() - 1).widget()
             if w:
                 w.deleteLater()
-        for e in entries:
-            self.hist_box.addWidget(HistoryItem(e, self))
+        for i, e in enumerate(entries):
+            item = self.hist_box.itemAt(i).widget() if i < self.hist_box.count() else None
+            if item is None:
+                self.hist_box.addWidget(HistoryItem(e, self))
+            else:
+                item.rebind(e)
         self.hist_holder.setUpdatesEnabled(True)
         self.hist_holder.setVisible(bool(entries))
         if not entries:
@@ -1205,14 +1220,11 @@ class HistoryItem(QFrame):
         lay.setSpacing(10)
         text = QVBoxLayout()
         text.setSpacing(3)
-        when = time.strftime("%a %d %b, %I:%M %p", time.localtime(entry.ts)).replace(" 0", " ")
-        meta = [when, f"{entry.seconds:.0f} s"]
-        if entry.app:
-            meta.append(entry.app.removesuffix(".exe"))
-        text.addWidget(label("  ·  ".join(meta), "sub"))
-        body = label(entry.text if len(entry.text) < 600 else entry.text[:600].rstrip() + "...", wrap=True)
-        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        text.addWidget(body)
+        self.meta_label = label(self._meta_text(entry), "sub")
+        text.addWidget(self.meta_label)
+        self.body_label = label(self._body_text(entry), wrap=True)
+        self.body_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        text.addWidget(self.body_label)
         lay.addLayout(text, 1)
         copy = button("", "flat", icon="copy")
         copy.setToolTip("Copy")
@@ -1221,15 +1233,37 @@ class HistoryItem(QFrame):
         delete = button("", "flat", icon="trash")
         delete.setToolTip("Delete")
         delete.setAccessibleName("Delete dictation")
-        delete.clicked.connect(lambda: win.history.delete(entry.id))
+        delete.clicked.connect(self._delete)
         lay.addWidget(copy, 0, Qt.AlignmentFlag.AlignTop)
         lay.addWidget(delete, 0, Qt.AlignmentFlag.AlignTop)
         self.copy_btn = copy
+
+    @staticmethod
+    def _meta_text(entry) -> str:
+        when = time.strftime("%a %d %b, %I:%M %p", time.localtime(entry.ts)).replace(" 0", " ")
+        meta = [when, f"{entry.seconds:.0f} s"]
+        if entry.app:
+            meta.append(entry.app.removesuffix(".exe"))
+        return "  ·  ".join(meta)
+
+    @staticmethod
+    def _body_text(entry) -> str:
+        return entry.text if len(entry.text) < 600 else entry.text[:600].rstrip() + "..."
+
+    def rebind(self, entry) -> None:
+        """Show another entry in this card. Rebuilding ~150 styled frames on
+        every keystroke and every dictation was the History tab's lag."""
+        self.entry = entry
+        self.meta_label.setText(self._meta_text(entry))
+        self.body_label.setText(self._body_text(entry))
 
     def _copy(self) -> None:
         self.win.app.copy(self.entry.text)
         self.copy_btn.setIcon(icons.icon("check", theme.current().ok))
         QTimer.singleShot(1200, lambda: self.copy_btn.setIcon(icons.icon("copy", theme.current().text)))
+
+    def _delete(self) -> None:
+        self.win.history.delete(self.entry.id)
 
 
 def _model_title(name: str) -> str:

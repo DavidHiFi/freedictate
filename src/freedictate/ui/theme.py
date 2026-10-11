@@ -193,6 +193,9 @@ QComboBoxPrivateContainer {{ background: transparent; border: none; }}
 QComboBox QAbstractItemView::item {{ min-height: 30px; padding: 0 8px; border-radius: 4px; }}
 QComboBox QAbstractItemView::item:hover {{ background: {rgba(p.hover, 0.7)}; }}
 
+/* The handle is 12px + a 4px ring = 20px tall; without a matching widget
+   height Qt sizes the slider to 15px and clips the ring at top and bottom. */
+QSlider:horizontal {{ min-height: 20px; }}
 QSlider::groove:horizontal {{ height: 4px; background: {rgba(p.line, 1.0)}; border-radius: 2px; }}
 QSlider::sub-page:horizontal {{ background: {p.accent}; border-radius: 2px; }}
 QSlider::handle:horizontal {{ background: {p.accent}; border: 4px solid {mix(p.surface, p.bg, 0.3)}; width: 12px; height: 12px;

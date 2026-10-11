@@ -205,13 +205,10 @@ class FluentWindow(QWidget):
     def paintEvent(self, e):
         p = QPainter(self)
         pal = theme.current()
-        if self._backdrop == "solid":
-            alpha = 1.0
-        elif self._native_tb:
-            # The caption can't be tinted, so the body stays untinted to match.
-            alpha = 0.0
-        else:
-            alpha = self._tint
+        # Solid covers the material completely; a material takes the tint over
+        # it. The Windows title bar can't take the tint: it keeps the raw
+        # material, drawn by DWM outside this client area.
+        alpha = 1.0 if self._backdrop == "solid" else self._tint
         # One step above zero keeps the window clickable: a layered window's
         # fully transparent pixels pass clicks to the window behind.
         p.fillRect(self.rect(), theme.qc(pal.bg, max(alpha, 1 / 255)))
