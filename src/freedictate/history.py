@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import paths
+from .log import log
 from .textproc import word_count
 
 _SCHEMA = """
@@ -54,7 +55,7 @@ class History:
             try:
                 fn()
             except Exception:
-                pass
+                log.exception("History listener failed")
 
     def add(self, text: str, seconds: float, model: str = "", app: str = "", ts: float | None = None) -> int:
         with self._lock:

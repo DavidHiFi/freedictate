@@ -31,6 +31,9 @@ def main() -> int:
     ap.add_argument("--pages", default="dictation,models,text,look,history,general,about")
     ap.add_argument("--prefix", default="")
     ap.add_argument("--size", default="1000x720")
+    ap.add_argument("--pad", type=int, default=0,
+                    help="desktop pixels captured around the window; keep 0 so nothing "
+                         "outside the app lands in the previews")
     ap.add_argument("--overlay", action="store_true")
     ap.add_argument("--menus", action="store_true", help="also capture the tray menu and a dropdown")
     ap.add_argument("--quit", action="store_true", default=True)
@@ -55,8 +58,9 @@ def main() -> int:
     w_, h_ = (int(x) for x in args.size.split("x"))
     user32 = ctypes.windll.user32
 
-    def grab(widget, name: str, pad: int = 24) -> None:
+    def grab(widget, name: str, pad: int | None = None) -> None:
         from PySide6.QtGui import QGuiApplication
+        pad = args.pad if pad is None else pad
         g = widget.frameGeometry()
         screen = QGuiApplication.screenAt(g.center()) or QGuiApplication.primaryScreen()
         sg = screen.geometry()
@@ -106,7 +110,7 @@ def main() -> int:
             app.overlay.history.extend([0.6, 0.9, 0.5, 0.8, 0.4, 0.7, 0.3, 0.5, 0.2])
             app.overlay._show("listening")
             app.overlay.timer.stop()
-            QTimer.singleShot(500, lambda: (grab(app.overlay, "overlay", pad=16), app.overlay.hide(), next_step(w)))
+            QTimer.singleShot(500, lambda: (grab(app.overlay, "overlay"), app.overlay.hide(), next_step(w)))
         elif kind == "menu":
             from PySide6.QtCore import QPoint
             app._fill_menu()
@@ -114,7 +118,7 @@ def main() -> int:
             app.menu.popup(QPoint(g.right() - 40, g.top() + 120))
 
             def shot():
-                grab(app.menu, "tray-menu", pad=20)
+                grab(app.menu, "tray-menu")
                 app.menu.hide()
                 next_step(w)
             QTimer.singleShot(700, shot)

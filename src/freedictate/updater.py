@@ -17,6 +17,7 @@ from .log import log
 
 API = f"https://api.github.com/repos/{REPO}/releases?per_page=15"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_PREREL_RANK = {"alpha": 0, "a": 0, "beta": 1, "b": 1, "pre": 1, "preview": 1, "rc": 2, "c": 2}
 
 
 @dataclass
@@ -31,14 +32,15 @@ class Release:
 
 
 def parse_version(v: str) -> tuple:
-    """'v3.1.0-beta.2' -> (3, 1, 0, 0, 2); a final release sorts after its pre-releases."""
+    """'v3.1.0-rc.1' -> (3, 1, 0, 2, 1); a final release sorts after its pre-releases."""
     m = re.match(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-.]?([a-z]+)\.?(\d+)?)?", v.strip().lower())
     if not m:
         return (0,)
     major, minor, patch = (int(x or 0) for x in m.group(1, 2, 3))
     if m.group(4):
-        return (major, minor, patch, 0, int(m.group(5) or 0))
-    return (major, minor, patch, 1, 0)
+        rank = _PREREL_RANK.get(m.group(4), 0)   # alpha < beta < rc, so rc.1 beats beta.2
+        return (major, minor, patch, rank, int(m.group(5) or 0))
+    return (major, minor, patch, 3, 0)
 
 
 def newer(candidate: str, current: str = __version__) -> bool:

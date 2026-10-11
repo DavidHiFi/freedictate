@@ -58,7 +58,8 @@ class Engine:
         self.ms = ModelState()
         self._jobs: queue.Queue[Take | None] = queue.Queue()
         self._stop = threading.Event()
-        self._load_lock = threading.Lock()
+        self._load_lock = threading.Lock()     # guards the actual model load
+        self._serial_lock = threading.Lock()   # guards the serial/cancel swap only
         self._load_serial = 0
         self._download_cancel = threading.Event()
         self._matcher = hotkeys.Matcher(cfg["hotkey"]) if hotkeys.is_valid(cfg["hotkey"]) else hotkeys.Matcher("ctrl+win")
@@ -99,7 +100,8 @@ class Engine:
 
     # -------------------------------------------------------------- startup
     def start(self) -> None:
-        threading.Thread(target=self._transcribe_loop, daemon=True, name="transcriber").start()
+        self._transcriber = threading.Thread(target=self._transcribe_loop, daemon=True, name="transcriber")
+        self._transcriber.start()
         threading.Thread(target=self._poll_loop, daemon=True, name="hotkey").start()
         self.ensure_model()
 
@@ -108,6 +110,10 @@ class Engine:
         self._download_cancel.set()
         self.recorder.stop()
         self._jobs.put(None)
+        t = getattr(self, "_transcriber", None)
+        if t is not None and t is not threading.current_thread() and t.is_alive():
+            # Let a take in flight finish writing history before App.quit() closes the db.
+            t.join(timeout=2.0)
 
     def _config_changed(self, keys: set[str]) -> None:
         if "hotkey" in keys and hotkeys.is_valid(self.cfg["hotkey"]):
@@ -124,11 +130,12 @@ class Engine:
         want = self.cfg["model"]
         if not force and want == self.ms.active and self.model is not None:
             return
-        self._load_serial += 1
-        serial = self._load_serial
-        self._download_cancel.set()          # stop a download for a model no longer wanted
-        self._download_cancel = threading.Event()
-        cancel = self._download_cancel
+        with self._serial_lock:   # the GPU download worker can call this concurrently
+            self._load_serial += 1
+            serial = self._load_serial
+            self._download_cancel.set()          # stop a download for a model no longer wanted
+            self._download_cancel = threading.Event()
+            cancel = self._download_cancel
         self.ms.wanted = want
         threading.Thread(target=self._load_worker, args=(want, serial, cancel), daemon=True,
                          name="model-loader").start()

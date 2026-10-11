@@ -41,14 +41,22 @@ def main(argv: list[str] | None = None) -> int:
             logmod.log.error("Task change failed: %s", out)
         return 0 if ok else 1
     if "--make-icon" in argv:
+        i = argv.index("--make-icon")
+        if i + 1 >= len(argv):
+            print("usage: FreeDictate --make-icon PATH")
+            return 2
         from pathlib import Path
         from PySide6.QtGui import QGuiApplication
         from .ui import icons
         _app = QGuiApplication(sys.argv[:1])
-        icons.write_ico(Path(argv[argv.index("--make-icon") + 1]))
+        icons.write_ico(Path(argv[i + 1]))
         return 0
     if "--self-test" in argv:
-        return _self_test(argv[argv.index("--self-test") + 1])
+        i = argv.index("--self-test")
+        if i + 1 >= len(argv):
+            print("usage: FreeDictate --self-test FILE")
+            return 2
+        return _self_test(argv[i + 1])
     if "--preload" in argv:
         from . import models
         i = argv.index("--preload")

@@ -120,12 +120,23 @@ def migrate_legacy(old: dict) -> dict:
             out[key] = old[key]
     if old.get("device") in ("cpu", "cuda", "auto"):
         out["device"] = old["device"]
+    if old.get("compute_type") in ("auto", "int8", "int8_float16", "float16", "float32"):
+        out["compute_type"] = old["compute_type"]
     if "beeps" in old:
         out["sounds"] = old["beeps"]
     if "auto_paste" in old:
         out["output"] = "paste" if old["auto_paste"] else "clipboard"
     if "backdrop" in old:
         out["backdrop"] = _OLD_BACKDROP.get(old["backdrop"], "mica_alt")
+    if "min_seconds" in old:
+        out["min_seconds"] = old["min_seconds"]
+    if "silence_peak" in old:
+        out["silence_peak"] = old["silence_peak"]
+    if "paste_delay" in old:
+        try:
+            out["paste_delay_ms"] = round(float(old["paste_delay"]) * 1000)
+        except (TypeError, ValueError):
+            pass
     if "hotkey" in out:
         out["hotkey"] = {"right-ctrl": "rctrl", "right-alt": "ralt"}.get(out["hotkey"], out["hotkey"])
     out["first_run_done"] = True
@@ -147,12 +158,17 @@ class Config:
         if self.path.exists():
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    raise ValueError("settings file is not a JSON object")
+                if "beeps" in raw or "auto_paste" in raw or "paste_delay" in raw:
+                    raw = migrate_legacy(raw)   # v1/v2 settings keep their meaning
             except (OSError, ValueError) as e:
                 log.warning("Settings unreadable (%s); keeping a copy and using defaults.", e)
                 try:
                     self.path.replace(self.path.with_suffix(".broken.json"))
                 except OSError:
                     pass
+                raw = {}
         with self._lock:
             self._data = dict(DEFAULTS)
             for k, v in raw.items():

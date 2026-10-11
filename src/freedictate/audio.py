@@ -173,7 +173,7 @@ class LevelMeter:
                 s.stop()
                 s.close()
             except Exception:
-                pass
+                log.debug("Closing the level stream failed", exc_info=True)
 
     @property
     def running(self) -> bool:

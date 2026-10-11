@@ -36,9 +36,11 @@ OutputBaseFilename=FreeDictate-{#AppVersion}-Setup
 SetupIconFile=..\assets\freedictate.ico
 UninstallDisplayIcon={app}\FreeDictate.exe
 UninstallDisplayName=FreeDictate
-Compression=lzma2/ultra64
+; lzma2/ultra64 with solid compression exhausts the 32-bit compiler's 2 GB
+; address space on a PyInstaller tree this size (measured: Out of memory after
+; a full pass). lzma2/max stays inside it and compresses within a few percent.
+Compression=lzma2/max
 SolidCompression=yes
-LZMANumBlockThreads=4
 WizardStyle=modern dynamic windows11
 WizardSizePercent=110
 CloseApplications=yes

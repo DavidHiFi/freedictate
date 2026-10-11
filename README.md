@@ -1,90 +1,87 @@
 # FreeDictate
 
-Unlimited local speech-to-text dictation for Windows 11. Same push-to-talk feel as Wispr Flow, with no account, no cloud, and no weekly limit. Audio never leaves your PC.
+Unlimited local speech-to-text dictation for Windows 11. Hold a shortcut, speak, let go — the text lands at your cursor. No account, no cloud, no weekly limit. Audio never leaves your PC.
 
-Hold **Ctrl+Win**, speak, release. The text pastes at your cursor.
-
-## Install
-
-Needs Windows 11 and Python 3.10 or newer from [python.org](https://www.python.org/downloads/) (tick *Add python.exe to PATH* during setup). Not the Microsoft Store build.
-
-**One line.** Open PowerShell and paste:
-
-```powershell
-irm https://github.com/DavidHiFi/freedictate/releases/latest/download/Install.ps1 | iex
-```
-
-That downloads the release into `%LOCALAPPDATA%\FreeDictate`, installs the Python packages, fetches the Whisper model once (about 500 MB), and adds a single autostart entry.
-
-**Or by hand.** Download `freedictate.zip` from the [releases page](https://github.com/DavidHiFi/freedictate/releases), extract it anywhere, then:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-FreeDictate.ps1 -Install
-```
-
-Add `-Audit` instead of `-Install` to check first without changing anything.
-
-## Use
-
-1. Click any text field.
-2. Hold Ctrl+Win and speak.
-3. Release. Text pastes at the cursor and stays on the clipboard for a Ctrl+V fallback.
-4. Esc cancels a take with nothing pasted.
-
-Beeps mark the state: one beep when listening starts, a higher beep when text pastes, a low beep when a take is discarded or cancelled.
-
-## Start and stop
-
-- **Start:** double click `Start-FreeDictate.cmd`, or log in again and the autostart entry launches it silently.
-- **Stop:** Ctrl+C in its window, or end the `pythonw` process running `freedictate.py` in Task Manager.
-- Takes append to `transcripts.log` in the install folder. Delete that file any time to clear history.
-
-## If you also use Wispr Flow
-
-Quit Wispr Flow or rebind its push-to-talk key before starting FreeDictate. Both listen to Ctrl+Win, so running both pastes twice.
-
-## Configure
-
-Edit `config.json` next to `freedictate.py`, then restart the app.
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `model` | `small.en` | Whisper model. `tiny.en` is faster, `medium.en` is more accurate. |
-| `device` | `cpu` | Set `cuda` only if NVIDIA CUDA works on your PC. |
-| `compute_type` | `int8` | Quantization. Leave it unless you know why. |
-| `language` | `en` | Dictation language. |
-| `input_device` | `""` | Mic name substring. Empty means the system default. |
-| `hotkey` | `ctrl+win` | Fixed in this build. |
-| `auto_paste` | `true` | `false` leaves text on the clipboard instead of pasting. |
-| `paste_delay` | `0.15` | Seconds between copying and pasting. |
-| `beeps` | `true` | Audible state cues. |
-| `min_seconds` | `0.5` | Takes shorter than this are discarded. |
-| `silence_peak` | `0.005` | Below this a take counts as silence and is discarded. |
-| `remove_fillers` | `true` | Drops um, uh, you know, basically from transcripts. |
-
-FreeDictate reads your microphone. It never changes mic routing, audio apps, drivers, display settings, or services.
-
-## Commands
-
-```text
-python freedictate.py                 hold Ctrl+Win to dictate
-python freedictate.py --audit         read-only checks, changes nothing
-python freedictate.py --list-devices  show input devices, changes nothing
-python freedictate.py --mic-test 5    5 second level meter, changes nothing
-python freedictate.py --preload       download and cache the model once
-```
-
-## Uninstall
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-FreeDictate.ps1 -Uninstall
-```
-
-Then delete the install folder. No restart needed. `pip uninstall faster-whisper sounddevice numpy pyperclip pynput` clears the packages too.
+<p align="center">
+  <img src="docs/images/dictation.png" alt="FreeDictate settings — Dictation page" width="720">
+</p>
+<p align="center">
+  <img src="docs/images/models.png" alt="Speech model page" width="360">
+  &nbsp;
+  <img src="docs/images/look.png" alt="Appearance page" width="360">
+</p>
 
 ## How it works
 
-`pynput` watches Ctrl+Win, `sounddevice` records while you hold it, `faster-whisper` transcribes locally, and `pyperclip` plus a Ctrl+V keystroke pastes the result. The model downloads from Hugging Face on first run and caches in your user profile. No server, no API key, no telemetry.
+1. Click any text field.
+2. Hold **Ctrl+Win** (the default hotkey) and speak.
+3. Release. The transcript is pasted at your cursor.
+
+**Esc** cancels a take. In *toggle* mode a short press starts and a second press stops; in *both* mode a tap latches and holding pushes to talk. A small overlay near your cursor shows the input level and a timer while you speak.
+
+## Download
+
+Grab the newest release from [github.com/DavidHiFi/freedictate/releases/latest](https://github.com/DavidHiFi/freedictate/releases/latest). Every release ships two builds:
+
+| File | What it is |
+| --- | --- |
+| `FreeDictate-<version>-Setup.exe` | The installer. Per-user by default, no admin prompt. |
+| `FreeDictate-<version>-Portable.zip` | Portable build. Extract anywhere and run `FreeDictate.exe`. |
+| `SHA256SUMS` | Checksums for the files above. |
+
+No Python, no dependencies: both builds are frozen executables that bundle everything.
+
+## Install
+
+Run `FreeDictate-<version>-Setup.exe`. It installs to your profile by default (no admin needed; you can pick *all users* on the first page), offers a startup shortcut and an optional desktop icon, and adds an entry to *Apps › Installed apps* for clean removal. On the first launch, pick a voice model in Settings — it downloads once, then dictation is fully offline.
+
+Updating is built in: Settings → *General* → *Check for updates*. FreeDictate downloads the new build from GitHub Releases, verifies it against `SHA256SUMS`, and restarts itself.
+
+## Portable
+
+Extract the zip wherever you like — a USB stick works — and run `FreeDictate.exe`. A `portable.txt` marker next to the exe tells FreeDictate to keep everything (settings, history, downloaded models) in a `data\` folder beside it, so the whole folder moves with you and nothing is written to the registry or AppData. The portable build can update itself the same way, keeping your `data\` folder.
+
+## Settings
+
+Everything lives in one window with seven pages:
+
+- **Dictation** — hotkey and mode, microphone with a live level test, sounds and volume, auto-stop on silence, vocabulary hints passed to the model, pause.
+- **Speech model** — pick a Whisper model: from *Tiny* (75 MB, fastest) to *Large v3 Turbo*, English-only or multilingual, CPU or NVIDIA GPU. A fallback model keeps dictation working while a new one downloads.
+- **Text and pasting** — filler removal, capitalization, end punctuation, voice commands ("new line", "new paragraph"), find-and-replace rules, output method (paste / Shift+Insert / type / clipboard only) and clipboard restore.
+- **Appearance** — ten themes plus *Match Windows*, the Windows accent colour, any installed font, and the window material: **Mica Alt, Mica, Acrylic** or solid, with a tint slider. Backdrops need Windows 11 22H2 and transparency turned on; otherwise you get the solid look automatically.
+- **History** — searchable dictation history in SQLite on your PC, retention in days, clear or export. Transcribe audio and video files here too.
+- **General** — start at login (normal or elevated), update settings, prerelease channel, export/import settings.
+- **About** — version, licences, links.
+
+## Models
+
+| Model | Size | Good for |
+| --- | --- | --- |
+| Tiny | 75 MB | Short notes, slow PCs |
+| Base | 145 MB | Fast and decent |
+| Small | 484 MB | The default; good balance |
+| Medium | 1.5 GB | More accuracy |
+| Distil Large v3 | 1.5 GB | Near-Large accuracy, ~2× faster |
+| Large v3 Turbo | 1.6 GB | Most accurate; best with a GPU |
+| multilingual variants | — | 30+ languages via *Detect automatically* |
+
+With an NVIDIA GPU, Settings offers a one-click CUDA support download. Without it, everything runs on CPU.
+
+## Privacy
+
+Recording, transcription, history and settings stay on your PC. The only network traffic is the model download you choose and the optional update check against the GitHub Releases API — both visible and disableable in Settings. No telemetry, no accounts.
+
+## If you also use Wispr Flow
+
+Quit Wispr Flow or rebind its push-to-talk key before starting FreeDictate. Both listen for the same hotkey, so running both pastes twice.
+
+## Building from source
+
+```powershell
+pwsh -File scripts\build.ps1
+```
+
+runs the test suite, freezes the app with PyInstaller, self-tests the frozen exe, compiles the Inno Setup installer, and zips the portable build into `dist\`. Pass `-SkipInstaller`, `-SkipTests` or `-Python <path>` as needed; see the header of `scripts\build.ps1`. Source layout: `src\freedictate` (core), `src\freedictate\ui` (settings window and overlay), `tests\`, `packaging\`.
 
 ## License
 

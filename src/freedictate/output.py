@@ -283,6 +283,8 @@ def deliver(text: str, method: str, restore: bool, delay_ms: int) -> str:
         return "typed"
     saved = save_clipboard() if restore else None
     if not set_clipboard(text, transient=restore and saved is not None):
+        if saved is not None:
+            restore_clipboard(saved)   # don't leave the clipboard emptied by the failed set
         type_text(text)
         return "typed"
     seq = user32.GetClipboardSequenceNumber()

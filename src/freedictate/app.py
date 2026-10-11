@@ -7,7 +7,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QGuiApplication, QIcon
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon
 
@@ -29,6 +29,8 @@ class Bus(QObject):
     gpu_progress = Signal(int, int)
     gpu_status = Signal(str)                   # "", "downloading", "done", "error: ..."
     file_result = Signal(str, str)             # path, text or "error: ..."
+    notify = Signal(str, str, bool)            # title, text, error
+    quit_requested = Signal()                  # worker threads ask the GUI thread to quit
 
 
 class App(QObject):
@@ -51,6 +53,8 @@ class App(QObject):
         self.overlay = Overlay(self.engine, self.cfg)
         self._build_tray()
         self.bus.event.connect(self._on_engine_event)
+        self.bus.notify.connect(self.notify)
+        self.bus.quit_requested.connect(self.quit)
         self.cfg.on_change(self._on_config_change)
         models.enable_gpu_libs()
         self.engine.start()
@@ -248,8 +252,9 @@ class App(QObject):
                 self.update_release = rel
                 self.bus.update_status.emit(msg, rel)
                 if rel and not manual:
-                    QTimer.singleShot(0, lambda: self.notify(
-                        "An update is ready", f"FreeDictate {rel.version} is available. Open Settings to install it."))
+                    self.bus.notify.emit(
+                        "An update is ready",
+                        f"FreeDictate {rel.version} is available. Open Settings to install it.", False)
             except Exception as e:
                 log.warning("Update check failed: %s", e)
                 self.bus.update_status.emit("Couldn't reach GitHub to check for updates. Check your connection "
@@ -271,7 +276,7 @@ class App(QObject):
                 f = updater.download(rel, lambda d, t: self.bus.update_progress.emit(d, t))
                 self.bus.update_status.emit("Installing. FreeDictate restarts by itself.", rel)
                 updater.install(f)
-                QTimer.singleShot(0, self.quit)
+                self.bus.quit_requested.emit()
             except Exception as e:
                 log.exception("Update failed")
                 self.bus.update_status.emit(f"The update didn't install: {e}", rel)

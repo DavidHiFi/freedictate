@@ -3,6 +3,7 @@
 
     pwsh -File scripts\build.ps1                     exe + self-test + installer + portable zip
     pwsh -File scripts\build.ps1 -SkipTests          skip pytest
+    pwsh -File scripts\build.ps1 -SkipPyInstaller    reuse dist\ from a previous build
     pwsh -File scripts\build.ps1 -SkipInstaller      exe + portable only
     pwsh -File scripts\build.ps1 -Python <path>      use a specific interpreter
                                                      (default: "python" on PATH)
@@ -20,6 +21,7 @@
 param(
   [switch]$SkipTests,
   [switch]$SkipInstaller,
+  [switch]$SkipPyInstaller,
   [switch]$NoSelfTest,
   [string]$Python = "python"
 )
@@ -63,15 +65,18 @@ if (-not (Test-Path "$Root\assets\freedictate.ico")) {
 if (-not $SkipTests) {
   Write-Host "== tests =="
   $env:FREEDICTATE_HOME = Join-Path $env:TEMP "freedictate-build-tests"
-  Invoke-Native $Python -m pytest tests -q
+  # Own scratch root, so a stale or locked %TEMP%\pytest-of-* dir can't break the build.
+  Invoke-Native $Python -m pytest tests -q "--basetemp=$(Join-Path $env:TEMP 'freedictate-build-pytest')"
 }
 
 # --- frozen build -----------------------------------------------------------
-Write-Host "== pyinstaller =="
-Invoke-Native $Python -m PyInstaller packaging\freedictate.spec --noconfirm
+$exe = "$Root\dist\FreeDictate\FreeDictate.exe"
+if (-not $SkipPyInstaller) {
+  Write-Host "== pyinstaller =="
+  Invoke-Native $Python -m PyInstaller packaging\freedictate.spec --noconfirm
+}
 
 # --- self-test --------------------------------------------------------------
-$exe = "$Root\dist\FreeDictate\FreeDictate.exe"
 if (-not (Test-Path $exe)) { throw "PyInstaller did not produce $exe" }
 if (-not $NoSelfTest) {
   Write-Host "== self-test on the frozen exe =="
@@ -87,7 +92,9 @@ if (-not $SkipInstaller) {
   Write-Host "== inno setup =="
   $iscc = @(
     "C:\Program Files (x86)\Inno Setup 7\ISCC.exe",
-    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
   ) | Where-Object { Test-Path $_ } | Select-Object -First 1
   if (-not $iscc) { $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source }
   if (-not $iscc) { throw "Inno Setup not found. Install it or run with -SkipInstaller." }
@@ -128,4 +135,9 @@ Write-Host "== artifacts =="
 Get-ChildItem "$Root\dist" -File | ForEach-Object {
   "{0,12:N0}  {1}  {2}" -f $_.Length, (Get-FileHash $_.FullName -Algorithm SHA256).Hash.Substring(0, 16), $_.Name
 }
+# Attach this file to the release: the in-app updater verifies its download
+# against a SHA256SUMS asset when one is present (updater._expected_sha).
+Get-ChildItem "$Root\dist" -File -Filter "FreeDictate-$Version-*" | ForEach-Object {
+  "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+} | Set-Content "$Root\dist\SHA256SUMS" -Encoding ASCII
 Write-Host "== build complete =="

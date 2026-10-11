@@ -30,18 +30,21 @@ if os.environ.get("FREEDICTATE_HOME"):  # tests and side-by-side dev runs; model
     DATA = Path(os.environ["FREEDICTATE_HOME"])
     LOGS = DATA / "logs"
     MODELS = None
+    _cuda_root = DATA
 elif _portable:
     DATA = APP_DIR / "data"
     LOGS = DATA / "logs"
     MODELS: Path | None = DATA / "models"
+    _cuda_root = DATA
 else:
     DATA = _known("APPDATA", "AppData/Roaming") / "FreeDictate"
     LOGS = _known("LOCALAPPDATA", "AppData/Local") / "FreeDictate" / "logs"
     MODELS = None  # Hugging Face default cache
+    _cuda_root = _known("LOCALAPPDATA", "AppData/Local") / "FreeDictate"
 
 SETTINGS = DATA / "settings.json"
 HISTORY_DB = DATA / "history.db"
-CUDA_DIR = (DATA if _portable else _known("LOCALAPPDATA", "AppData/Local") / "FreeDictate") / "cuda"
+CUDA_DIR = _cuda_root / "cuda"
 
 
 def portable() -> bool:

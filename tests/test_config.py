@@ -39,7 +39,24 @@ def test_legacy_migration():
            "hotkey": "right-ctrl", "font": "FiraCode Nerd Font", "paste_delay": 0.15}
     m = migrate_legacy(old)
     assert m == {"model": "large-v3-turbo", "hotkey": "rctrl", "font": "FiraCode Nerd Font", "sounds": False,
-                 "output": "clipboard", "backdrop": "acrylic", "first_run_done": True}
+                 "output": "clipboard", "backdrop": "acrylic", "paste_delay_ms": 150, "first_run_done": True}
+
+
+def test_non_object_settings_file_is_quarantined(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text("[1, 2, 3]")
+    c = Config(p)
+    assert c["theme"] == DEFAULTS["theme"]
+    assert (tmp_path / "settings.broken.json").exists()
+
+
+def test_legacy_settings_file_migrates_on_load(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"beeps": False, "auto_paste": False, "paste_delay": 0.3}))
+    c = Config(p)
+    assert c["sounds"] is False
+    assert c["output"] == "clipboard"
+    assert c["paste_delay_ms"] == 300
 
 
 def test_export_import_roundtrip(tmp_path):
