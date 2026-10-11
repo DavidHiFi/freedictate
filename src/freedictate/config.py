@@ -1,0 +1,224 @@
+"""Settings: defaults, validation, migration from v1/v2 config.json, atomic save."""
+from __future__ import annotations
+
+import json
+import os
+import threading
+from pathlib import Path
+from typing import Any, Callable
+
+from . import paths
+from .log import log
+
+DEFAULTS: dict[str, Any] = {
+    # dictation
+    "hotkey": "ctrl+win",
+    "hotkey_mode": "hold",          # hold | toggle | both
+    "model": "small.en",
+    "language": "en",               # ISO code, or "auto"
+    "input_device": "",             # device name; "" is the system default
+    "sounds": True,
+    "sound_volume": 50,             # 0-100
+    "max_seconds": 600,
+    "auto_stop_silence": 0,         # seconds of silence that end a toggle take; 0 is off
+    "vocabulary": "",               # names and jargon passed to Whisper as a prompt
+    # output
+    "output": "paste",              # paste | paste_shift_insert | type | clipboard
+    "restore_clipboard": True,
+    "trailing_space": True,
+    "remove_fillers": True,
+    "capitalize": True,
+    "end_punctuation": True,
+    "voice_commands": True,
+    "replacements": [],             # [{"find": str, "replace": str}]
+    # overlay
+    "overlay": True,
+    "overlay_position": "bottom",   # bottom | top
+    "overlay_timer": True,
+    # look
+    "theme": "Catppuccin Mocha",
+    "accent_source": "theme",       # theme | windows
+    "font": "Segoe UI Variable Text",
+    "backdrop": "mica_alt",         # mica_alt | mica | acrylic | solid
+    "tint": 65,                     # 0-100, how much theme colour covers the backdrop
+    "backdrop_when_inactive": False,
+    "reduce_motion": False,
+    # system
+    "run_elevated": False,
+    "history_enabled": True,
+    "history_days": 0,              # 0 keeps everything
+    "check_updates": True,
+    "update_prereleases": False,
+    "skipped_version": "",
+    "last_update_check": 0.0,
+    # engine tuning
+    "device": "auto",               # auto | cpu | cuda
+    "compute_type": "auto",         # auto | int8 | int8_float16 | float16 | float32
+    "cpu_threads": 0,
+    "beam_size": 5,
+    "vad": True,
+    "min_seconds": 0.4,
+    "silence_peak": 0.004,
+    "paste_delay_ms": 40,
+    # bookkeeping
+    "first_run_done": False,
+    "window_geometry": "",
+    "window_page": "dictation",
+}
+
+CHOICES: dict[str, tuple] = {
+    "hotkey_mode": ("hold", "toggle", "both"),
+    "output": ("paste", "paste_shift_insert", "type", "clipboard"),
+    "overlay_position": ("bottom", "top"),
+    "accent_source": ("theme", "windows"),
+    "backdrop": ("mica_alt", "mica", "acrylic", "solid"),
+    "device": ("auto", "cpu", "cuda"),
+    "compute_type": ("auto", "int8", "int8_float16", "float16", "float32"),
+}
+
+RANGES: dict[str, tuple[float, float]] = {
+    "sound_volume": (0, 100), "max_seconds": (10, 3600), "auto_stop_silence": (0, 30),
+    "tint": (0, 100), "history_days": (0, 3650), "cpu_threads": (0, 64), "beam_size": (1, 10),
+    "min_seconds": (0.1, 5), "silence_peak": (0.0, 0.2), "paste_delay_ms": (0, 1000),
+}
+
+_OLD_BACKDROP = {"Acrylic": "acrylic", "Frosted glass": "acrylic", "Mica": "mica",
+                 "Mica Alt": "mica_alt", "Light acrylic": "mica", "Solid": "solid"}
+
+
+def _coerce(key: str, value: Any) -> Any:
+    default = DEFAULTS[key]
+    if isinstance(default, bool):
+        return bool(value)
+    if isinstance(default, (int, float)) and not isinstance(default, bool):
+        try:
+            value = type(default)(value)
+        except (TypeError, ValueError):
+            return default
+        if key in RANGES:
+            lo, hi = RANGES[key]
+            value = type(default)(min(max(value, lo), hi))
+        return value
+    if isinstance(default, str):
+        value = str(value)
+        if key in CHOICES and value not in CHOICES[key]:
+            return default
+        return value
+    if isinstance(default, list):
+        if key == "replacements" and isinstance(value, list):
+            return [{"find": str(r.get("find", "")), "replace": str(r.get("replace", ""))}
+                    for r in value if isinstance(r, dict) and str(r.get("find", "")).strip()]
+        return list(default)
+    return value
+
+
+def migrate_legacy(old: dict) -> dict:
+    """Map a v1/v2 config.json onto v3 keys."""
+    out: dict[str, Any] = {}
+    for key in ("model", "language", "input_device", "hotkey", "remove_fillers", "overlay", "theme", "font"):
+        if key in old:
+            out[key] = old[key]
+    if old.get("device") in ("cpu", "cuda", "auto"):
+        out["device"] = old["device"]
+    if "beeps" in old:
+        out["sounds"] = old["beeps"]
+    if "auto_paste" in old:
+        out["output"] = "paste" if old["auto_paste"] else "clipboard"
+    if "backdrop" in old:
+        out["backdrop"] = _OLD_BACKDROP.get(old["backdrop"], "mica_alt")
+    if "hotkey" in out:
+        out["hotkey"] = {"right-ctrl": "rctrl", "right-alt": "ralt"}.get(out["hotkey"], out["hotkey"])
+    out["first_run_done"] = True
+    return out
+
+
+class Config:
+    """Thread-safe settings with change listeners. Saves on every change."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = path or paths.SETTINGS
+        self._lock = threading.RLock()
+        self._data = dict(DEFAULTS)
+        self._listeners: list[Callable[[set[str]], None]] = []
+        self.load()
+
+    def load(self) -> None:
+        raw: dict = {}
+        if self.path.exists():
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                log.warning("Settings unreadable (%s); keeping a copy and using defaults.", e)
+                try:
+                    self.path.replace(self.path.with_suffix(".broken.json"))
+                except OSError:
+                    pass
+        with self._lock:
+            self._data = dict(DEFAULTS)
+            for k, v in raw.items():
+                if k in DEFAULTS:
+                    self._data[k] = _coerce(k, v)
+
+    def save(self) -> None:
+        with self._lock:
+            text = json.dumps(self._data, indent=2, ensure_ascii=False) + "\n"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, self.path)
+
+    def __getitem__(self, key: str) -> Any:
+        with self._lock:
+            return self._data[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            return self._data.get(key, default)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return json.loads(json.dumps(self._data))
+
+    def update(self, values: dict[str, Any], save: bool = True) -> set[str]:
+        changed: set[str] = set()
+        with self._lock:
+            for k, v in values.items():
+                if k not in DEFAULTS:
+                    continue
+                v = _coerce(k, v)
+                if self._data.get(k) != v:
+                    self._data[k] = v
+                    changed.add(k)
+        if changed:
+            if save:
+                self.save()
+            for fn in list(self._listeners):
+                try:
+                    fn(changed)
+                except Exception:
+                    log.exception("Settings listener failed")
+        return changed
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.update({key: value})
+
+    def reset(self, keep: tuple[str, ...] = ("first_run_done", "window_geometry")) -> None:
+        values = {k: v for k, v in DEFAULTS.items() if k not in keep}
+        self.update(values)
+
+    def on_change(self, fn: Callable[[set[str]], None]) -> None:
+        self._listeners.append(fn)
+
+    def export_to(self, target: Path) -> None:
+        data = self.snapshot()
+        for k in ("window_geometry", "last_update_check", "first_run_done"):
+            data.pop(k, None)
+        target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def import_from(self, source: Path) -> set[str]:
+        raw = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("Not a FreeDictate settings file.")
+        if "beeps" in raw or "auto_paste" in raw:
+            raw = migrate_legacy(raw)
+        return self.update({k: v for k, v in raw.items() if k in DEFAULTS})

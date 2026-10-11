@@ -18,3 +18,9 @@ backups/
 .idea/
 .DS_Store
 Thumbs.db
+
+.pytest-tmp/
+data/
+build/
+dist/
+*.spec.bak

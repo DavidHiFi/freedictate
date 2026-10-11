@@ -1,0 +1,32 @@
+# UTF-8
+#
+# Windows version resource for FreeDictate.exe. scripts\build.ps1 rewrites this
+# file from the version string in src\freedictate\__init__.py before each build,
+# so edit the version there, not here.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(3, 0, 0, 0),
+    prodvers=(3, 0, 0, 0),
+    mask=0x3F,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable("040904B0", [
+        StringStruct("CompanyName", "DavidHiFi"),
+        StringStruct("FileDescription", "FreeDictate: offline push-to-talk dictation"),
+        StringStruct("FileVersion", "3.0.0"),
+        StringStruct("InternalName", "FreeDictate"),
+        StringStruct("LegalCopyright", "Copyright (C) 2026 DavidHiFi. MIT license."),
+        StringStruct("OriginalFilename", "FreeDictate.exe"),
+        StringStruct("ProductName", "FreeDictate"),
+        StringStruct("ProductVersion", "3.0.0")
+      ])
+    ]),
+    VarFileInfo([VarStruct("Translation", [1033, 1200])])
+  ]
+)

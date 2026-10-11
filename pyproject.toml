@@ -1,0 +1,10 @@
+[project]
+name = "freedictate"
+dynamic = ["version"]
+description = "Offline push-to-talk dictation for Windows"
+requires-python = ">=3.11"
+license = "MIT"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"
