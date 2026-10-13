@@ -407,19 +407,31 @@ class SettingsWindow(FluentWindow):
         card.add(Row("Sound volume", "", vol))
         bar = Toggle(cfg["overlay"])
         pos = Segmented([("bottom", "Bottom"), ("top", "Top")], cfg["overlay_position"])
+        mat = Segmented([("mica_alt", "Mica Alt"), ("mica", "Mica"), ("acrylic", "Acrylic"), ("blur", "Blur"),
+                         ("solid", "Solid")], cfg["overlay_backdrop"])
         timer = Toggle(cfg["overlay_timer"])
 
         def set_bar(on: bool) -> None:
             cfg["overlay"] = on
             pos.setEnabled(on)
+            mat.setEnabled(on)
             timer.setEnabled(on)
         bar.toggled.connect(set_bar)
         pos.changed.connect(lambda k: cfg.update({"overlay_position": k}))
+        mat.changed.connect(lambda k: cfg.update({"overlay_backdrop": k}))
         timer.toggled.connect(lambda on: cfg.update({"overlay_timer": on}))
         pos.setEnabled(cfg["overlay"])
+        mat.setEnabled(cfg["overlay"])
         timer.setEnabled(cfg["overlay"])
         card.add(Row("Recording bar", "A small bar on screen while it listens and transcribes.", bar))
         card.add(Row("Bar position", "", pos))
+        mat_row = Row("Bar material", "Same choices as Window material, with its tint. Set when the bar "
+                      "appears, not live.", mat)
+        if not native.backdrop_supported():
+            mat_row.set_note("Materials need Windows 11 22H2 or later. The bar stays solid.")
+        elif not native.transparency_enabled():
+            mat_row.set_note("Transparency effects are off in Windows Settings > Personalization > Colors.")
+        card.add(mat_row)
         card.add(Row("Show the timer", "", timer))
 
     def _update_lang_note(self) -> None:

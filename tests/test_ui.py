@@ -333,3 +333,44 @@ def test_blur_is_a_material_choice(qapp, env):
     finally:
         win.dispose()
         win.close()
+
+
+def test_bar_material_offers_the_window_choices(qapp, env):
+    from freedictate.config import CHOICES
+    assert CHOICES["overlay_backdrop"] == CHOICES["backdrop"]
+    assert fresh_cfg()["overlay_backdrop"] == "solid"
+
+
+def test_bar_material_maps_to_what_windows_can_draw(qapp, env, monkeypatch):
+    """A bar that never takes focus gets no system Mica or Acrylic (measured flat),
+    so the bar paints its own material: frosted for Blur and Acrylic, tinted for Mica."""
+    from freedictate.ui import overlay
+    monkeypatch.setattr(native, "backdrop_supported", lambda: True)
+    monkeypatch.setattr(native, "transparency_enabled", lambda: True)
+    cfg = fresh_cfg()
+    expected = {"solid": "solid", "mica": "tinted", "mica_alt": "tinted", "acrylic": "frosted", "blur": "frosted"}
+    for choice, kind in expected.items():
+        cfg["overlay_backdrop"] = choice
+        assert overlay.bar_kind(cfg) == kind, choice
+    monkeypatch.setattr(native, "transparency_enabled", lambda: False)
+    cfg["overlay_backdrop"] = "blur"
+    assert overlay.bar_kind(cfg) == "solid"
+
+
+def test_transcribing_dots_sit_on_the_bar_midline(qapp, env):
+    """The old "..." was text on the baseline and read low; the dots are shapes now."""
+    from freedictate.ui.overlay import H, W, Overlay
+    engine = FakeEngine()
+    engine.recorder = SimpleNamespace(level=0.0, elapsed=lambda: 0.0)
+    bar = Overlay(engine, fresh_cfg(overlay_timer=True, overlay_backdrop="solid"))
+    try:
+        bar.mode = "transcribing"
+        img = bar.grab().toImage()
+        base = img.pixelColor(W - 40, 2).getRgb()[:3]
+        rows = [y for y in range(6, H - 6) for x in range(W - 27, W - 13)
+                if sum(abs(a - b) for a, b in zip(img.pixelColor(x, y).getRgb()[:3], base)) > 60]
+        assert rows, "the dots must be drawn"
+        assert abs(sum(rows) / len(rows) - (H - 1) / 2) < 0.5
+    finally:
+        bar.deleteLater()
+        pump(qapp)

@@ -122,13 +122,13 @@ class _WINCOMPATTRDATA(ctypes.Structure):
 
 
 user32.SetWindowCompositionAttribute.argtypes = [wt.HWND, ctypes.POINTER(_WINCOMPATTRDATA)]
-_WCA_ACCENT_POLICY, _ACCENT_DISABLED, _ACCENT_BLURBEHIND = 19, 0, 3
+_WCA_ACCENT_POLICY, _ACCENT_DISABLED, _ACCENT_BLURBEHIND, _ACCENT_ACRYLIC = 19, 0, 3, 4
 
 
-def _set_accent(hwnd: int, state: int) -> bool:
-    """The pre-Mica blur (undocumented but stable since Windows 10): a plain
-    gaussian blur of what's behind, with no noise or tint of its own."""
-    policy = _ACCENT_POLICY(state, 0, 0, 0)
+def _set_accent(hwnd: int, state: int, gradient: int = 0) -> bool:
+    """Accent policies from Windows 10, still drawn by Windows 11: blur (no noise
+    or tint of its own) and acrylic (blur with grain; ``gradient`` is its tint)."""
+    policy = _ACCENT_POLICY(state, 0, gradient, 0)
     data = _WINCOMPATTRDATA(_WCA_ACCENT_POLICY, ctypes.cast(ctypes.byref(policy), ctypes.c_void_p),
                             ctypes.sizeof(policy))
     return bool(user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data)))
@@ -151,6 +151,16 @@ def set_backdrop(hwnd: int, kind: str, extend: bool = False) -> bool:
         return _set_accent(hwnd, _ACCENT_BLURBEHIND)
     _set_accent(hwnd, _ACCENT_DISABLED)
     return _attr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, BACKDROP_VALUES.get(kind, 1)) == 0
+
+
+def set_accent_acrylic(hwnd: int) -> bool:
+    """Acrylic drawn as an accent. The system Acrylic backdrop goes black on a menu
+    that is not the focused window (the tray menu); the accent keeps drawing. The
+    gradient is almost clear, so the window's own tint sets the colour."""
+    if not backdrop_supported():
+        return False
+    _attr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, 1)
+    return _set_accent(hwnd, _ACCENT_ACRYLIC, 0x01000000)
 
 
 def _bgr(hex_color: str) -> int:

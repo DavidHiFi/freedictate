@@ -9,7 +9,7 @@ import collections
 import math
 import time
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRectF, Qt, QTimer
+from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -17,6 +17,17 @@ from . import native, theme
 
 W, H = 212, 42
 BARS = 17
+
+
+def bar_kind(cfg) -> str:
+    """How the bar draws its material. Windows' own blur, acrylic and Mica leave square
+    corners or go flat on a bar that never takes focus (measured), so the bar paints the
+    material itself from a picture of what is behind it: blurred for Blur and Acrylic,
+    sharp and tinted for Mica."""
+    choice = cfg["overlay_backdrop"]
+    if choice == "solid" or not (native.backdrop_supported() and native.transparency_enabled()):
+        return "solid"
+    return "tinted" if choice in ("mica", "mica_alt") else "frosted"
 
 
 class Overlay(QWidget):
@@ -41,8 +52,30 @@ class Overlay(QWidget):
         self.fade.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.fade.finished.connect(self._fade_done)
         self._hiding = False
+        self.kind = bar_kind(cfg)
+        self._behind = None
 
     # ------------------------------------------------------------ control
+    def apply_look(self) -> None:
+        self.kind = bar_kind(self.cfg)
+        self._behind = None
+        self.update()
+
+    def _snapshot(self) -> None:
+        """Take the picture the material is drawn from. Taken once as the bar appears,
+        so the bar itself never ends up in it."""
+        self._behind = None
+        if self.kind == "solid":
+            return
+        g = self.geometry()
+        screen = QGuiApplication.screenAt(g.center()) or QGuiApplication.primaryScreen()
+        shot = screen.grabWindow(0, g.x(), g.y(), g.width(), g.height()).toImage()
+        if self.kind == "frosted":
+            shot = shot.scaled(W // 6, H // 6, Qt.AspectRatioMode.IgnoreAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+        self._behind = shot.scaled(W, H, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+
     def on_state(self, state: str) -> None:
         if not self.cfg["overlay"]:
             if self.isVisible():
@@ -90,6 +123,8 @@ class Overlay(QWidget):
         self._hiding = False
         if was_hidden:
             self._place()
+            if not self.isVisible():
+                self._snapshot()
             self.setWindowOpacity(0.0)
             self.show()
             native.make_overlay(int(self.winId()))
@@ -140,7 +175,12 @@ class Overlay(QWidget):
         r = QRectF(0.5, 0.5, W - 1, H - 1)
         path = QPainterPath()
         path.addRoundedRect(r, H / 2, H / 2)
-        p.fillPath(path, theme.qc(pal.bg, 0.94))
+        if self._behind is not None:
+            p.save()
+            p.setClipPath(path)
+            p.drawImage(QRectF(0, 0, W, H), self._behind)
+            p.restore()
+        p.fillPath(path, theme.qc(pal.bg, 0.94 if self.kind == "solid" else self.cfg["tint"] / 100))
         p.setPen(QPen(theme.qc(pal.line, 1.0), 1))
         p.drawPath(path)
 
@@ -173,9 +213,15 @@ class Overlay(QWidget):
             half = max(1.5, v * reach)
             x = bars_left + i * gap
             p.drawLine(QRectF(x, mid - half, 0, 2 * half).topLeft(), QRectF(x, mid - half, 0, 2 * half).bottomLeft())
-        if self.cfg["overlay_timer"]:
-            secs = int(self.engine.recorder.elapsed()) if listening else None
+        if self.cfg["overlay_timer"] and listening:
+            secs = int(self.engine.recorder.elapsed())
             p.setPen(QColor(pal.sub))
             p.setFont(theme.font(9, QFont.Weight.Medium))
-            text = f"{secs // 60}:{secs % 60:02d}" if secs is not None else "..."
+            text = f"{secs // 60}:{secs % 60:02d}"
             p.drawText(QRectF(W - 54, 0, 40, H), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight), text)
+        elif self.cfg["overlay_timer"]:
+            # Drawn as shapes: "..." as text sits on the baseline and reads low.
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(pal.sub))
+            for i in range(3):
+                p.drawEllipse(QPointF(W - 16 - 5 * (2 - i), H / 2), 1.6, 1.6)

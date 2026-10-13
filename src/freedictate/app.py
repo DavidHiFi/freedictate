@@ -87,11 +87,14 @@ class App(QObject):
         widgets.set_reduce_motion(self.cfg["reduce_motion"])
         if self.settings_window is not None:
             self.settings_window.relook()
+        if hasattr(self, "overlay"):
+            self.overlay.apply_look()
         if hasattr(self, "tray"):
             self._refresh_tray()
 
     def _on_config_change(self, keys: set[str]) -> None:
-        if keys & {"theme", "font", "backdrop", "tint", "backdrop_when_inactive", "reduce_motion", "accent_source"}:
+        if keys & {"theme", "font", "backdrop", "tint", "backdrop_when_inactive", "reduce_motion", "accent_source",
+                   "overlay_backdrop"}:
             self.apply_look()
         if "titlebar" in keys:
             # Framed and frameless are different native windows; build a new one.

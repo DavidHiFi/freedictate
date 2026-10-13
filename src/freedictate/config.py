@@ -38,6 +38,7 @@ DEFAULTS: dict[str, Any] = {
     "overlay": True,
     "overlay_position": "bottom",   # bottom | top
     "overlay_timer": True,
+    "overlay_backdrop": "solid",    # mica_alt | mica | acrylic | blur | solid; the window's tint applies
     # look
     "theme": "Catppuccin Mocha",
     "accent_source": "theme",       # theme | windows
@@ -76,6 +77,7 @@ CHOICES: dict[str, tuple] = {
     "overlay_position": ("bottom", "top"),
     "accent_source": ("theme", "windows"),
     "backdrop": ("mica_alt", "mica", "acrylic", "blur", "solid"),
+    "overlay_backdrop": ("mica_alt", "mica", "acrylic", "blur", "solid"),
     "titlebar": ("custom", "windows"),
     "device": ("auto", "cpu", "cuda"),
     "compute_type": ("auto", "int8", "int8_float16", "float16", "float32"),
