@@ -32,17 +32,18 @@ CATALOG: list[ModelInfo] = [
     ModelInfo("base.en", "Base", 145, True, "Fast and decent."),
     ModelInfo("small.en", "Small", 484, True, "Good balance on most PCs."),
     ModelInfo("medium.en", "Medium", 1530, True, "More accurate, needs a fast CPU or a GPU."),
-    ModelInfo("distil-large-v3", "Distil Large v3", 1510, True, "Near-Large accuracy, about twice as fast."),
-    ModelInfo("large-v3-turbo", "Large v3 Turbo", 1620, False, "Most accurate. Best with an NVIDIA GPU."),
+    ModelInfo("distil-large-v3.5", "Distil Large v3.5", 1515, True,
+              "About as accurate as Large v3 for English, and faster."),
+    ModelInfo("large-v3-turbo", "Large v3 Turbo", 1620, False, "Close to Large v3, much faster. Best with an NVIDIA GPU."),
     ModelInfo("tiny", "Tiny (multilingual)", 75, False, "Any language. Fastest."),
     ModelInfo("base", "Base (multilingual)", 145, False, "Any language."),
     ModelInfo("small", "Small (multilingual)", 484, False, "Any language. Good balance."),
     ModelInfo("medium", "Medium (multilingual)", 1530, False, "Any language. More accurate."),
-    ModelInfo("large-v3", "Large v3 (multilingual)", 3090, False, "Any language. Slowest, most accurate."),
+    ModelInfo("large-v3", "Large v3 (multilingual)", 3090, False, "Any language. The most accurate Whisper model, and the slowest."),
 ]
 BY_NAME = {m.name: m for m in CATALOG}
 # Which downloaded model to use while the chosen one downloads.
-FALLBACK_ORDER = ("small.en", "base.en", "tiny.en", "large-v3-turbo", "medium.en", "distil-large-v3",
+FALLBACK_ORDER = ("small.en", "base.en", "tiny.en", "large-v3-turbo", "medium.en", "distil-large-v3.5", "distil-large-v3",
                   "small", "base", "tiny", "medium", "large-v3")
 
 LANGUAGES = {

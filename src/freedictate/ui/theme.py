@@ -150,6 +150,8 @@ QLabel[role="warn"] {{ color: {p.warn}; font-size: 9.5pt; }}
 QLabel[role="danger"] {{ color: {p.danger}; font-size: 9.5pt; }}
 QLabel[role="value"] {{ color: {p.sub}; }}
 QLabel a {{ color: {p.accent}; }}
+QLabel:disabled, QLabel[role="rowtitle"]:disabled, QLabel[role="sub"]:disabled, QLabel[role="value"]:disabled {{
+    color: {rgba(p.text, 0.4)}; }}
 
 QFrame#card {{ background: {surface}; border-radius: 8px; }}
 QFrame#divider {{ background: {rgba(p.line, 0.6)}; max-height: 1px; min-height: 1px; border: none; }}
@@ -180,10 +182,12 @@ QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
     background: {field}; border: 1px solid {rgba(p.line, 0.9)}; border-bottom: 1px solid {rgba(p.sub, 0.6)};
     border-radius: 6px; padding: 5px 9px; selection-background-color: {p.accent}; selection-color: {p.on_accent}; }}
 QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border-bottom: 2px solid {p.accent}; }}
+QLineEdit:disabled, QPlainTextEdit:disabled, QSpinBox:disabled {{ color: {rgba(p.text, 0.4)}; background: {rgba(p.field, 0.4)}; }}
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; border: none; }}
 
 QComboBox {{ background: {field}; border: 1px solid {rgba(p.line, 0.9)}; border-radius: 6px; padding: 5px 30px 5px 10px; min-height: 20px; }}
 QComboBox:hover {{ background: {hover}; }}
+QComboBox:disabled {{ color: {rgba(p.text, 0.4)}; background: {rgba(p.field, 0.4)}; }}
 QComboBox:focus[kbd="true"] {{ border: 1px solid {p.accent}; }}
 QComboBox::drop-down {{ border: none; width: 28px; }}
 QComboBox::down-arrow {{ image: url(:/fd/chevron-down.svg); width: 12px; height: 12px; }}

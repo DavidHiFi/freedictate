@@ -221,9 +221,18 @@ class Card(QFrame):
             wrap.setContentsMargins(16, 0, 16, 0)
             wrap.addWidget(line)
             self.lay.addLayout(wrap)
+            w._card_divider = line
         self.lay.addWidget(w)
         self._count += 1
         return w
+
+    @staticmethod
+    def show_row(w: QWidget, visible: bool) -> None:
+        """Hide a row together with the hairline above it."""
+        w.setVisible(visible)
+        line = getattr(w, "_card_divider", None)
+        if line is not None:
+            line.setVisible(visible)
 
 
 class Banner(QFrame):

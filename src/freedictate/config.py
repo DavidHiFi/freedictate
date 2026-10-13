@@ -27,6 +27,7 @@ DEFAULTS: dict[str, Any] = {
     "restore_clipboard": True,
     "trailing_space": True,
     "remove_fillers": True,
+    "remove_repeats": True,
     "capitalize": True,
     "end_punctuation": True,
     "voice_commands": True,

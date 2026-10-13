@@ -233,3 +233,19 @@ def test_history_reloads_deferred_and_reuses_cards(qapp, env):
         settings_mod.HistoryItem = orig
         win.dispose()
         win.close()
+
+
+def test_silence_row_only_shows_for_press_to_start(qapp, env):
+    win = open_window(qapp, fresh_cfg(hotkey_mode="hold"), env)
+    try:
+        row = win._silence_row
+        assert row.isHidden() and row._card_divider.isHidden()
+        win.cfg["hotkey_mode"] = "toggle"
+        from freedictate.ui.widgets import Card
+        Card.show_row(row, True)
+        pump(qapp)
+        assert not row.isHidden() and not row._card_divider.isHidden()
+    finally:
+        win.close()
+        win.deleteLater()
+        pump(qapp)

@@ -335,7 +335,7 @@ class SettingsWindow(FluentWindow):
         def set_mode(k: str) -> None:
             cfg["hotkey_mode"] = k
             mode_row.desc.setText(descs[k])
-            self._silence_row.setEnabled(k != "hold")
+            Card.show_row(self._silence_row, k != "hold")
             self.refresh_status()
         mode.changed.connect(set_mode)
         card.add(mode_row)
@@ -383,9 +383,11 @@ class SettingsWindow(FluentWindow):
         silence = Combo([("0", "Never"), ("2", "After 2 seconds"), ("3", "After 3 seconds"), ("5", "After 5 seconds"),
                          ("8", "After 8 seconds")], str(cfg["auto_stop_silence"]), width=200)
         silence.currentIndexChanged.connect(lambda _: cfg.update({"auto_stop_silence": int(silence.value())}))
-        self._silence_row = Row("Stop when you go quiet", "For press-to-start takes.", silence)
-        self._silence_row.setEnabled(cfg["hotkey_mode"] != "hold")
+        # Only press-to-start takes can end on silence; a held take ends when
+        # the keys come up, so the row is hidden in Hold mode.
+        self._silence_row = Row("Stop when you go quiet", "Ends a press-to-start take after a pause.", silence)
         card.add(self._silence_row)
+        Card.show_row(self._silence_row, cfg["hotkey_mode"] != "hold")
 
         longest = Combo([("60", "1 minute"), ("120", "2 minutes"), ("300", "5 minutes"), ("600", "10 minutes"),
                          ("1200", "20 minutes"), ("3600", "1 hour")], str(cfg["max_seconds"]), width=200)
@@ -398,7 +400,7 @@ class SettingsWindow(FluentWindow):
         vol.setEnabled(cfg["sounds"])
         sounds.toggled.connect(lambda on: (cfg.update({"sounds": on}), vol.setEnabled(on)))
         vol.changed.connect(lambda v: (cfg.update({"sound_volume": v}), audio.play("start", v)))
-        card.add(Row("Sounds", "A short tone when recording starts and stops.", sounds))
+        card.add(Row("Sounds", "A short tone when recording starts and stops, and when the text arrives.", sounds))
         card.add(Row("Sound volume", "", vol))
         bar = Toggle(cfg["overlay"])
         pos = Segmented([("bottom", "Bottom"), ("top", "Top")], cfg["overlay_position"])
@@ -683,7 +685,12 @@ class SettingsWindow(FluentWindow):
                 ("capitalize", "Capital letter at the start", ""),
                 ("end_punctuation", "Full stop at the end", "Adds one when the sentence has none."),
                 ("remove_fillers", "Remove um and uh", "Drops hesitation sounds. Words like \"like\" stay."),
-                ("voice_commands", "Spoken line breaks", "Say \"new line\" or \"new paragraph\".")):
+                ("remove_repeats", "Remove repeated words", "Turns \"the the\" or \"I want, I want to\" into "
+                 "one. Words people repeat on purpose, like \"really really\", stay."),
+                ("voice_commands", "Spoken punctuation and lists",
+                 "Say \"comma\", \"full stop\", \"question mark\", \"colon\", \"hyphen\", \"open bracket\", "
+                 "\"open quote\", \"dot point\", \"new line\" or \"new paragraph\". "
+                 "Say \"literal\" first to type the word instead.")):
             t = Toggle(cfg[key])
             t.toggled.connect(lambda on, k=key: cfg.update({k: on}))
             card.add(Row(title, desc, t))

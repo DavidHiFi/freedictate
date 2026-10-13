@@ -344,7 +344,7 @@ class Engine:
         c = self.cfg
         return textproc.clean(raw, remove_fillers=c["remove_fillers"], voice_commands=c["voice_commands"],
                               capitalize=c["capitalize"], end_punctuation=c["end_punctuation"],
-                              replacements=c["replacements"])
+                              repeats=c["remove_repeats"], replacements=c["replacements"])
 
     def _do_take(self, take: Take) -> None:
         cfg = self.cfg
@@ -375,6 +375,8 @@ class Engine:
         delivered = text + (" " if cfg["trailing_space"] and cfg["output"] != "clipboard" and not text.endswith("\n") else "")
         outcome = output.deliver(delivered, cfg["output"], cfg["restore_clipboard"], int(cfg["paste_delay_ms"]))
         self.emit("result", {"text": text, "outcome": outcome, "seconds": take.seconds, "took": took})
+        if outcome != "blocked":
+            audio.play("done", vol)
         if outcome == "blocked":
             self.emit("error", {"title": "That window runs as administrator",
                                 "text": "Windows blocks pasting into it. The text is on your clipboard. "

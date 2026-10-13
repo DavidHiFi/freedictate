@@ -188,7 +188,10 @@ _SOUNDS = {
     "stop": [(990, 0.05), (740, 0.07)],
     "cancel": [(520, 0.06), (390, 0.09)],
     "error": [(330, 0.09), (262, 0.14)],
+    "done": [(880, 0.04), (1175, 0.04), (1568, 0.09)],
 }
+# Bump when a tone above changes, so cached WAVs from older versions are not reused.
+_SOUND_REV = 2
 _sound_files: dict[tuple[str, int], str] = {}
 
 
@@ -224,7 +227,7 @@ def play(name: str, volume: int) -> None:
         if path is None:
             d = paths.LOGS.parent / "sounds"
             d.mkdir(parents=True, exist_ok=True)
-            f = d / f"{name}-{volume}.wav"
+            f = d / f"{name}-{volume}-r{_SOUND_REV}.wav"
             if not f.exists():
                 f.write_bytes(_render(_SOUNDS[name], volume / 100))
             path = _sound_files[key] = str(f)
