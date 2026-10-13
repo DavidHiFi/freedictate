@@ -33,8 +33,10 @@ class Palette:
 
 
 PALETTES: dict[str, Palette] = {p.name: p for p in [
-    Palette("Catppuccin Mocha", True, "#1e1e2e", "#313244", "#45475a", "#585b70", "#6c7086", "#45475a",
-            "#cdd6f4", "#a6adc8", "#89b4fa", "#11111b", "#f9e2af", "#f38ba8", "#a6e3a1"),
+    # Base window, Mantle cards, Crust fields; Surface0/1 only for hover, press and
+    # hairlines. Surface0 cards read grey against Base (same fix as WinLaunch 2.3.0).
+    Palette("Catppuccin Mocha", True, "#1e1e2e", "#181825", "#11111b", "#313244", "#45475a", "#313244",
+            "#cdd6f4", "#bac2de", "#89b4fa", "#11111b", "#f9e2af", "#f38ba8", "#a6e3a1"),
     Palette("Catppuccin Macchiato", True, "#24273a", "#363a4f", "#494d64", "#5b6078", "#6e738d", "#494d64",
             "#cad3f5", "#a5adcb", "#8aadf4", "#181926", "#eed49f", "#ed8796", "#a6da95"),
     Palette("Catppuccin Frappe", True, "#303446", "#414559", "#51576d", "#626880", "#737994", "#51576d",
