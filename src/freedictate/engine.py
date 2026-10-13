@@ -105,7 +105,7 @@ class Engine:
         self._transcriber.start()
         threading.Thread(target=self._poll_loop, daemon=True, name="hotkey").start()
         self.ensure_model()
-        if self.cfg["ai_tidy"] != "off":
+        if self.cfg["ai_tidy"]:
             self.prepare_tidy()
 
     def prepare_tidy(self) -> None:
@@ -135,7 +135,7 @@ class Engine:
             self.ensure_model(force="model" not in keys)
         if keys & {"hotkey", "hotkey_mode", "model"}:
             self.emit("state", {"state": self.state})
-        if keys & {"ai_tidy", "ai_model"} and self.cfg["ai_tidy"] != "off":
+        if keys & {"ai_tidy", "ai_model"} and self.cfg["ai_tidy"]:
             self._tidy_warned = False
             self.prepare_tidy()
 
@@ -384,7 +384,7 @@ class Engine:
             return
         log.info("Transcribed %.1fs in %.2fs: %d chars", take.seconds, took, len(text))
         before_tidy = ""
-        tidied = self._tidy(text, take.app)
+        tidied = self._tidy(text)
         if tidied:
             before_tidy, text = text, tidied
             took = time.monotonic() - t0
@@ -403,13 +403,10 @@ class Engine:
                                 "text": "Windows blocks pasting into it. The text is on your clipboard. "
                                         "Turn on Run as administrator in Settings to paste there."})
 
-    def _tidy(self, text: str, app: str) -> str | None:
+    def _tidy(self, text: str) -> str | None:
         cfg = self.cfg
-        mode = cfg["ai_tidy"]
-        if mode == "off":
+        if not cfg["ai_tidy"]:
             return None
-        if mode == "agent" and not _is_agent_app(app, cfg["ai_agent_apps"]):
-            mode = "clean"
         if not tidy.running() and not tidy.start(wait=8):
             if not self._tidy_warned:
                 self._tidy_warned = True
@@ -417,14 +414,13 @@ class Engine:
                                     "text": "Ollama isn't running or isn't installed, so the plain "
                                             "transcript was pasted. See Text and pasting in Settings."})
             return None
-        out = tidy.rewrite(text, mode, cfg["ai_model"], cfg["vocabulary"])
+        out = tidy.rewrite(text, cfg["ai_model"], cfg["vocabulary"])
         return textproc.apply_replacements(out, cfg["replacements"]) if out else None
 
     def _do_file(self, take: Take) -> None:
         self.emit("file", {"status": "working", "path": take.file})
         try:
-            from faster_whisper import decode_audio
-            data = decode_audio(take.file, sampling_rate=audio.RATE)
+            data = audio.decode_file(take.file)
             text = self._clean(self._decode(data))
         except Exception as e:
             # The caller waits for on_text either way, or its banner never clears.
@@ -432,13 +428,6 @@ class Engine:
             text = f"error: {e}"
         if take.on_text:
             take.on_text(text)
-
-
-def _is_agent_app(app: str, apps: str) -> bool:
-    """True when the take was dictated into one of the listed apps. An empty
-    list means every app."""
-    wanted = {a.strip().lower() for a in apps.split(",") if a.strip()}
-    return not wanted or app.lower() in wanted
 
 
 def _title(name: str) -> str:

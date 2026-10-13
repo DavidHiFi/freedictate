@@ -6,6 +6,7 @@ There is no Save button to forget.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QCompleter, QFileDialog, QFrame, QH
                                QMessageBox, QProgressBar, QPushButton, QScrollArea,
                                QSizePolicy, QSpinBox, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import APP_NAME, REPO_URL, __version__, audio, hotkeys, models, paths, system
+from .. import APP_NAME, REPO_URL, __version__, audio, hotkeys, models, paths, system, tidy
 from ..log import log
 from . import icons, native, theme
 from .widgets import (Banner, Card, Combo, HotkeyEdit, LevelMeter, NavButton, Row, Segmented, Slider, StatusDot,
@@ -378,7 +379,9 @@ class SettingsWindow(FluentWindow):
         vocab.setPlaceholderText("Names, brands, jargon, separated by commas")
         vocab.setMinimumWidth(300)
         vocab.editingFinished.connect(lambda: cfg.update({"vocabulary": vocab.text().strip()}))
-        card.add(Row("Words it should know", "Helps with names and terms it would otherwise misspell.", vocab))
+        self._vocab_row = Row("Words it should know", "Helps with names and terms it would otherwise misspell.", vocab)
+        card.add(self._vocab_row)
+        self._update_lang_note()
 
         silence = Combo([("0", "Never"), ("2", "After 2 seconds"), ("3", "After 3 seconds"), ("5", "After 5 seconds"),
                          ("8", "After 8 seconds")], str(cfg["auto_stop_silence"]), width=200)
@@ -426,6 +429,10 @@ class SettingsWindow(FluentWindow):
                                     "under Speech model to dictate in other languages.")
         else:
             self._lang_row.set_note("")
+        if hasattr(self, "_vocab_row"):
+            self._vocab_row.set_note("" if not info or info.prompts else
+                                     f"{info.title} doesn't use this list. Add fixes under Replacements "
+                                     "on the Text and pasting page instead.")
 
     def _fill_mics(self) -> None:
         try:
@@ -695,6 +702,8 @@ class SettingsWindow(FluentWindow):
             t.toggled.connect(lambda on, k=key: cfg.update({k: on}))
             card.add(Row(title, desc, t))
 
+        self._page_text_ai(page)
+
         card = page.section("Replacements", "Fix words it keeps getting wrong. Matches whole words, any case.")
         self.repl_box = QVBoxLayout()
         self.repl_box.setContentsMargins(16, 12, 16, 12)
@@ -709,6 +718,113 @@ class SettingsWindow(FluentWindow):
         self.repl_box.addWidget(add, 0, Qt.AlignmentFlag.AlignLeft)
         for r in cfg["replacements"]:
             self._add_repl(r["find"], r["replace"])
+
+    def _page_text_ai(self, page: Page) -> None:
+        cfg = self.cfg
+        card = page.section("AI tidy-up", "A small AI model on this PC rewrites each take after it's "
+                            "transcribed. Runs through Ollama; nothing leaves your PC.")
+        on = Toggle(cfg["ai_tidy"])
+        card.add(Row("Tidy with AI", "Removes stumbles, false starts and repeats, and punctuates long "
+                     "run-on takes. Keeps your words and order. Adds about a second. If the answer doesn't "
+                     "match what you said, the plain transcript is pasted instead.", on))
+
+        self.ai_model = Combo([], cfg["ai_model"], width=220)
+        self.ai_model.currentIndexChanged.connect(lambda _: self._ai_model_changed())
+        self.ai_get = button("Download", "primary", icon="download")
+        self.ai_get.clicked.connect(self._ai_download)
+        self.ai_get.hide()        # shown once Ollama says the model is missing
+        self.ai_model_row = Row("Model", "", self.ai_model)
+        self.ai_model_row.controls.addWidget(self.ai_get)
+        card.add(self.ai_model_row)
+
+        def set_on(enabled: bool) -> None:
+            cfg["ai_tidy"] = enabled
+            Card.show_row(self.ai_model_row, enabled)
+            if enabled:
+                self._ai_refresh()
+        on.toggled.connect(set_on)
+        self._ai_pull: dict = {}
+        self._ai_timer = QTimer(self)
+        self._ai_timer.setInterval(250)
+        self._ai_timer.timeout.connect(self._ai_tick)
+        Card.show_row(self.ai_model_row, cfg["ai_tidy"])
+        if cfg["ai_tidy"]:
+            QTimer.singleShot(0, self._ai_refresh)
+
+    def _ai_refresh(self) -> None:
+        """Fill the model list from Ollama and say what's missing. Ollama is
+        asked off the UI thread: starting it can take a few seconds."""
+        if self._ai_pull.get("busy"):
+            return
+
+        def work():
+            started = tidy.start()
+            self._ai_pull["state"] = (started, tidy.installed(), tidy.models() if started else [])
+        self._ai_pull["state"] = None
+        threading.Thread(target=work, daemon=True, name="ollama-check").start()
+        self._ai_timer.start()
+
+    def _ai_tick(self) -> None:
+        p = self._ai_pull
+        if p.pop("refresh", False):
+            self.ai_get.setEnabled(True)
+            self._ai_refresh()
+            return
+        if p.get("busy"):
+            done, total = p.get("progress", (0, 0))
+            pct = f" {done * 100 // total}%" if total else ""
+            self.ai_model_row.set_note(f"Downloading{pct}", "value")
+            return
+        if "error" in p:
+            self.ai_model_row.set_note(f"Download failed: {p.pop('error')}", "danger")
+        state = p.get("state")
+        if state is None:
+            return
+        self._ai_timer.stop()
+        p["state"] = None
+        running, installed, names = state
+        want = self.cfg["ai_model"]
+        have = want in names or (want + ":latest") in names
+        self.ai_model.set_items([(n, n) for n in sorted(set(names) | {want})], want)
+        self.ai_get.setVisible(running and not have)
+        if not installed:
+            self.ai_model_row.set_note('Needs Ollama. Install it from <a href="https://ollama.com/download">'
+                                       'ollama.com</a>, then come back here.', "warn")
+            self.ai_model_row.note.setTextFormat(Qt.TextFormat.RichText)
+            self.ai_model_row.note.setOpenExternalLinks(True)
+        elif not running:
+            self.ai_model_row.set_note("Ollama is installed but didn't start. Open it once, then try again.",
+                                       "warn")
+        elif not have:
+            self.ai_model_row.set_note(f"{want} isn't downloaded yet. Until it is, takes are pasted as "
+                                       "transcribed.", "warn")
+        else:
+            self.ai_model_row.set_note("")
+
+    def _ai_model_changed(self) -> None:
+        name = self.ai_model.value()
+        if name and name != self.cfg["ai_model"]:
+            self.cfg["ai_model"] = name
+            self._ai_refresh()
+
+    def _ai_download(self) -> None:
+        name = self.cfg["ai_model"]
+        p = self._ai_pull
+        p.update(busy=True, progress=(0, 0))
+        self.ai_get.setEnabled(False)
+
+        def work():
+            try:
+                tidy.pull(name, lambda d, t: p.__setitem__("progress", (d, t)))
+                tidy.warm(name)
+            except Exception as e:
+                log.exception("Downloading %s failed", name)
+                p["error"] = str(e)[:200]
+            finally:
+                p["busy"] = False
+                p["refresh"] = True   # the UI thread picks this up in _ai_tick
+        threading.Thread(target=work, daemon=True, name="ollama-pull").start()
+        self._ai_timer.start()
 
     def _add_repl(self, find: str, rep: str, focus: bool = False) -> None:
         w = QWidget()

@@ -4,7 +4,7 @@
 import re
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).parent
 SRC = ROOT / "src"
@@ -12,6 +12,7 @@ VERSION = re.search(r'__version__ = "([^"]+)"', (SRC / "freedictate" / "__init__
 
 datas = [(str(ROOT / "assets"), "assets")]
 datas += collect_data_files("faster_whisper")          # Silero VAD model
+datas += collect_data_files("onnx_asr") + copy_metadata("onnx-asr")   # preprocessors; reads its own version
 binaries = collect_dynamic_libs("ctranslate2") + collect_dynamic_libs("onnxruntime")
 # onnxruntime imports MSVCP140_1.dll, which PyInstaller only bundles inside
 # PySide6\. Put the VC++ runtime extras next to python313.dll so a PC without
@@ -25,7 +26,8 @@ a = Analysis(
     pathex=[str(SRC)],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["freedictate.app", "freedictate.ui.settings", "freedictate.ui.overlay", "freedictate.ui.polish"],
+    hiddenimports=["freedictate.app", "freedictate.ui.settings", "freedictate.ui.overlay", "freedictate.ui.polish"]
+                  + collect_submodules("onnx_asr"),
     excludes=["tkinter", "unittest", "pydoc", "pytest", "IPython", "matplotlib", "PIL", "pynput", "pystray",
               "pyperclip", "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtOpenGL", "PySide6.QtPdf"],
     noarchive=False,

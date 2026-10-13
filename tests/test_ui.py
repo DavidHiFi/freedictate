@@ -249,3 +249,33 @@ def test_silence_row_only_shows_for_press_to_start(qapp, env):
         win.close()
         win.deleteLater()
         pump(qapp)
+
+
+def test_ai_tidy_rows_follow_the_mode_and_ollama_state(qapp, env, monkeypatch):
+    from freedictate import tidy
+    monkeypatch.setattr(tidy, "start", lambda wait=10.0: True)
+    monkeypatch.setattr(tidy, "installed", lambda: True)
+    monkeypatch.setattr(tidy, "models", lambda: ["gemma3:4b"])
+    win = open_window(qapp, fresh_cfg(ai_tidy=True, ai_model="qwen3:4b-instruct", window_page="text"), env)
+    try:
+        deadline = time.monotonic() + 3
+        while win.ai_get.isHidden() and time.monotonic() < deadline:
+            pump(qapp)
+        assert not win.ai_model_row.isHidden()
+        assert not win.ai_get.isHidden()                       # chosen model missing: offer the download
+        assert "isn't downloaded" in win.ai_model_row.note.text()
+        assert win.ai_model.findData("gemma3:4b") >= 0
+    finally:
+        win.close()
+        win.deleteLater()
+        pump(qapp)
+
+
+def test_ai_tidy_off_hides_its_rows(qapp, env):
+    win = open_window(qapp, fresh_cfg(ai_tidy=False), env)
+    try:
+        assert win.ai_model_row.isHidden()
+    finally:
+        win.close()
+        win.deleteLater()
+        pump(qapp)

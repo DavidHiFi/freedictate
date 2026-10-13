@@ -25,6 +25,13 @@ class ModelInfo:
     size_mb: int
     english_only: bool
     note: str
+    engine: str = "whisper"     # whisper (faster-whisper) | parakeet (onnx-asr)
+    repo: str = ""              # Hugging Face repo when it isn't faster-whisper's own name
+
+    @property
+    def prompts(self) -> bool:
+        """Whether "Words it should know" reaches the model."""
+        return self.engine == "whisper"
 
 
 CATALOG: list[ModelInfo] = [
@@ -34,6 +41,9 @@ CATALOG: list[ModelInfo] = [
     ModelInfo("medium.en", "Medium", 1530, True, "More accurate, needs a fast CPU or a GPU."),
     ModelInfo("distil-large-v3.5", "Distil Large v3.5", 1515, True,
               "About as accurate as Large v3 for English, and faster."),
+    ModelInfo("parakeet-tdt-0.6b-v2", "Parakeet v2", 661, True,
+              "NVIDIA's English model. More accurate than Large v3 and fast on the processor alone. "
+              "Doesn't use Words it should know.", engine="parakeet", repo="istupakov/parakeet-tdt-0.6b-v2-onnx"),
     ModelInfo("large-v3-turbo", "Large v3 Turbo", 1620, False, "Close to Large v3, much faster. Best with an NVIDIA GPU."),
     ModelInfo("tiny", "Tiny (multilingual)", 75, False, "Any language. Fastest."),
     ModelInfo("base", "Base (multilingual)", 145, False, "Any language."),
@@ -54,10 +64,24 @@ LANGUAGES = {
     "he": "Hebrew", "id": "Indonesian", "vi": "Vietnamese", "th": "Thai", "ro": "Romanian", "hu": "Hungarian",
 }
 
-_FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
+_FILES = {
+    "whisper": ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"],
+    # int8 only: a third of the float32 size, and the same accuracy in testing.
+    "parakeet": ["config.json", "vocab.txt", "nemo128.onnx", "encoder-model.int8.onnx",
+                 "decoder_joint-model.int8.onnx"],
+}
+_MAIN_FILE = {"whisper": "model.bin", "parakeet": "encoder-model.int8.onnx"}
+
+
+def engine_of(name: str) -> str:
+    info = BY_NAME.get(name)
+    return info.engine if info else "whisper"
 
 
 def repo_id(name: str) -> str:
+    info = BY_NAME.get(name)
+    if info and info.repo:
+        return info.repo
     from faster_whisper.utils import _MODELS
     return _MODELS.get(name, name)
 
@@ -70,9 +94,10 @@ def local_path(name: str) -> Path | None:
     """Folder of a fully downloaded model, or None."""
     try:
         from huggingface_hub import snapshot_download
-        p = Path(snapshot_download(repo_id(name), allow_patterns=_FILES, local_files_only=True,
+        eng = engine_of(name)
+        p = Path(snapshot_download(repo_id(name), allow_patterns=_FILES[eng], local_files_only=True,
                                    cache_dir=cache_dir()))
-        return p if (p / "model.bin").exists() else None
+        return p if (p / _MAIN_FILE[eng]).exists() else None
     except Exception:
         return None
 
@@ -121,8 +146,9 @@ def download(name: str, progress: ProgressFn | None = None, cancel: threading.Ev
     import fnmatch
     from huggingface_hub import HfApi, hf_hub_download
     repo = repo_id(name)
+    eng = engine_of(name)
     info = HfApi().model_info(repo, files_metadata=True)
-    wanted = [s for s in info.siblings if any(fnmatch.fnmatch(s.rfilename, p) for p in _FILES)]
+    wanted = [s for s in info.siblings if any(fnmatch.fnmatch(s.rfilename, p) for p in _FILES[eng])]
     total = sum(s.size or 0 for s in wanted) or 1
     blobs = _repo_cache(repo) / "blobs"
     stop = threading.Event()
@@ -144,13 +170,13 @@ def download(name: str, progress: ProgressFn | None = None, cancel: threading.Ev
             if cancel is not None and cancel.is_set():
                 raise InterruptedError("Download cancelled")
             path = Path(hf_hub_download(repo, s.rfilename, cache_dir=cache_dir(), revision=info.sha)).parent
-        # model.bin is the last and largest file, so the loop's check can't
+        # The model file is the last and largest, so the loop's check can't
         # cover it: a cancel during it must still count as cancelled.
         if cancel is not None and cancel.is_set():
             raise InterruptedError("Download cancelled")
     finally:
         stop.set()
-    if path is None or not (path / "model.bin").exists():
+    if path is None or not (path / _MAIN_FILE[eng]).exists():
         raise RuntimeError(f"{name} downloaded incompletely")
     if progress:
         progress(total, total)
@@ -271,11 +297,57 @@ def resolve_device(device: str, compute_type: str) -> tuple[str, str]:
     return "cpu", ("int8" if compute_type in ("auto", "float16", "int8_float16") else compute_type)
 
 
+class _Segment:
+    def __init__(self, text: str):
+        self.text = text
+
+
+class ParakeetModel:
+    """onnx-asr Parakeet behind faster-whisper's transcribe() shape, so the
+    engine decodes every model the same way. Runs on the processor: int8 on
+    16 threads decodes a 10 s take in about half a second (measured)."""
+
+    CHUNK_S = 25   # longer stretches lose words (measured: 8% dropped on a 4 min take)
+
+    def __init__(self, path: Path, cpu_threads: int = 0):
+        import onnx_asr
+        import onnxruntime as rt
+        opts = rt.SessionOptions()
+        if cpu_threads:
+            opts.intra_op_num_threads = cpu_threads
+        self._m = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v2", str(path), quantization="int8",
+                                      providers=["CPUExecutionProvider"], sess_options=opts)
+
+    def _chunks(self, audio, vad: bool):
+        from . import audio as audio_mod
+        rate = audio_mod.RATE
+        if len(audio) <= self.CHUNK_S * rate and not vad:
+            return [audio]
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+        spans = get_speech_timestamps(audio, VadOptions(max_speech_duration_s=self.CHUNK_S,
+                                                        min_silence_duration_ms=400, speech_pad_ms=200))
+        if not spans:
+            return [] if vad else [audio]
+        return [audio[s["start"]:s["end"]] for s in spans]
+
+    def transcribe(self, audio, vad_filter: bool = True, **_ignored):
+        chunks = self._chunks(audio, vad_filter)
+        texts = self._m.recognize(chunks, sample_rate=16000) if chunks else []
+        return iter([_Segment(" ".join(t.strip() for t in texts if t.strip()))]), None
+
+
 def load(name: str, device: str, compute_type: str, cpu_threads: int = 0):
     """Load a model and run a real decode, so a broken dependency fails here
     and not silently on every dictation."""
-    from faster_whisper import WhisperModel
     import numpy as np
+    if engine_of(name) == "parakeet":
+        path = local_path(name)
+        if path is None:
+            raise RuntimeError(f"{name} isn't downloaded")
+        log.info("Loading %s on cpu (int8)", name)
+        m = ParakeetModel(path, cpu_threads)
+        list(m.transcribe(np.zeros(16000, dtype=np.float32), vad_filter=False)[0])
+        return m, "cpu", "int8"
     path = local_path(name)
     dev, ct = resolve_device(device, compute_type)
     log.info("Loading %s on %s (%s)", name, dev, ct)

@@ -180,6 +180,26 @@ class LevelMeter:
         return self._stream is not None
 
 
+def decode_file(path: str) -> np.ndarray:
+    """Any audio or video file as 16 kHz mono float32. faster-whisper's own
+    decode_audio passes an option PyAV 19 removed, so it can't be used."""
+    import av
+    resampler = av.audio.resampler.AudioResampler(format="s16", layout="mono", rate=RATE)
+    parts = []
+    with av.open(path, mode="r") as container:
+        for frame in container.decode(audio=0):
+            try:
+                for out in resampler.resample(frame):
+                    parts.append(out.to_ndarray().reshape(-1))
+            except av.error.InvalidDataError:
+                continue
+        for out in resampler.resample(None):
+            parts.append(out.to_ndarray().reshape(-1))
+    if not parts:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(parts).astype(np.float32) / 32768.0
+
+
 # ------------------------------------------------------------------ sounds
 
 _SOUNDS = {
