@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtCore import (Property, QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal)
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel,
-                               QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget)
+                               QLineEdit, QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from .. import hotkeys
 from . import icons, theme
@@ -322,6 +322,44 @@ class Combo(QComboBox):
             e.ignore()
 
 
+class ValueBox(QLineEdit):
+    """The number beside a slider, typeable: click it, type 87 or 87%, press
+    Enter (or click away). Esc puts the slider's value back. Same behaviour as
+    WinLaunch Enhanced's settings."""
+    committed = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("valueBox")
+        self.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.setFixedWidth(64)
+        self.setMaxLength(6)
+        self._shown = ""
+        self.editingFinished.connect(lambda: self.committed.emit(self.text()))
+
+    def show_value(self, text: str) -> None:
+        self._shown = text
+        if not self.hasFocus():
+            self.setText(text)
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        QTimer.singleShot(0, self.selectAll)   # a click would otherwise drop the selection
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.setText(self._shown)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self.setText(self._shown)
+            self.clearFocus()
+            return
+        super().keyPressEvent(e)
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.clearFocus()
+
+
 class Slider(QWidget):
     changed = Signal(int)
 
@@ -336,18 +374,35 @@ class Slider(QWidget):
         self.s.setFixedWidth(width)
         self.s.setCursor(Qt.CursorShape.PointingHandCursor)
         self.suffix = suffix
-        self.v = label(f"{value}{suffix}", "value")
-        self.v.setMinimumWidth(42)
-        self.v.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.v = ValueBox(self)
+        self.v.show_value(f"{value}{suffix}")
         lay.addWidget(self.s)
         lay.addWidget(self.v)
-        self.s.valueChanged.connect(lambda x: self.v.setText(f"{x}{self.suffix}"))
+        self.s.valueChanged.connect(lambda x: self.v.show_value(f"{x}{self.suffix}"))
         self.s.sliderReleased.connect(lambda: self.changed.emit(self.s.value()))
         self.s.valueChanged.connect(self._maybe_emit)
+        self.v.committed.connect(self._typed)
+
+    def _typed(self, text: str) -> None:
+        digits = text.strip().rstrip("%").strip().replace(",", ".")
+        try:
+            v = round(float(digits))
+        except ValueError:
+            self.v.show_value(f"{self.s.value()}{self.suffix}")
+            return
+        v = min(max(v, self.s.minimum()), self.s.maximum())
+        if v == self.s.value():
+            self.v.show_value(f"{v}{self.suffix}")
+        self.s.setValue(v)        # emits changed through valueChanged
 
     def _maybe_emit(self, x: int) -> None:
         if not self.s.isSliderDown():
             self.changed.emit(x)
+
+    def setAccessibleName(self, name: str) -> None:
+        super().setAccessibleName(name)
+        self.s.setAccessibleName(name)
+        self.v.setAccessibleName(f"{name} value")
 
     def value(self) -> int:
         return self.s.value()

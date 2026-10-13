@@ -113,6 +113,27 @@ def set_corners(hwnd: int, small: bool = False) -> None:
     _attr(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, 3 if small else 2)
 
 
+class _ACCENT_POLICY(ctypes.Structure):
+    _fields_ = [("state", ctypes.c_int), ("flags", ctypes.c_int), ("gradient", wt.DWORD), ("animation", ctypes.c_int)]
+
+
+class _WINCOMPATTRDATA(ctypes.Structure):
+    _fields_ = [("attribute", ctypes.c_int), ("data", ctypes.c_void_p), ("size", ctypes.c_size_t)]
+
+
+user32.SetWindowCompositionAttribute.argtypes = [wt.HWND, ctypes.POINTER(_WINCOMPATTRDATA)]
+_WCA_ACCENT_POLICY, _ACCENT_DISABLED, _ACCENT_BLURBEHIND = 19, 0, 3
+
+
+def _set_accent(hwnd: int, state: int) -> bool:
+    """The pre-Mica blur (undocumented but stable since Windows 10): a plain
+    gaussian blur of what's behind, with no noise or tint of its own."""
+    policy = _ACCENT_POLICY(state, 0, 0, 0)
+    data = _WINCOMPATTRDATA(_WCA_ACCENT_POLICY, ctypes.cast(ctypes.byref(policy), ctypes.c_void_p),
+                            ctypes.sizeof(policy))
+    return bool(user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data)))
+
+
 def set_backdrop(hwnd: int, kind: str, extend: bool = False) -> bool:
     """Apply a system backdrop. ``extend`` is for windows that keep the Windows
     title bar: the frame is extended over the client so the material runs
@@ -124,6 +145,11 @@ def set_backdrop(hwnd: int, kind: str, extend: bool = False) -> bool:
     # (measured on 26200).
     m = -1 if extend and kind != "solid" else 0
     dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(MARGINS(m, m, m, m)))
+    if kind == "blur":
+        # Blur is an accent, not a system backdrop; the two would stack.
+        _attr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, 1)
+        return _set_accent(hwnd, _ACCENT_BLURBEHIND)
+    _set_accent(hwnd, _ACCENT_DISABLED)
     return _attr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, BACKDROP_VALUES.get(kind, 1)) == 0
 
 

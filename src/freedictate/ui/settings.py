@@ -894,7 +894,8 @@ class SettingsWindow(FluentWindow):
         card.add(font_row)
 
         card = page.section("Window material")
-        bd = Segmented([("mica_alt", "Mica Alt"), ("mica", "Mica"), ("acrylic", "Acrylic"), ("solid", "Solid")],
+        bd = Segmented([("mica_alt", "Mica Alt"), ("mica", "Mica"), ("acrylic", "Acrylic"), ("blur", "Blur"),
+                        ("solid", "Solid")],
                        cfg["backdrop"])
         self.backdrop_row = Row("Material", "", bd)
         self.backdrop_note = self.backdrop_row
@@ -912,8 +913,7 @@ class SettingsWindow(FluentWindow):
         card.add(self.keep_row)
         tb = Segmented([("custom", "FreeDictate"), ("windows", "Windows")], cfg["titlebar"])
         tb.changed.connect(lambda k: cfg.update({"titlebar": k}))
-        card.add(Row("Title bar", "Windows uses the standard title bar, buttons and menu. Windows can't tint "
-                     "it, so it keeps the raw material while the body takes the tint.", tb))
+        card.add(Row("Title bar", "Windows uses the standard title bar, buttons and menu.", tb))
         self._update_backdrop_note()
 
         card = page.section("Motion")
@@ -926,6 +926,7 @@ class SettingsWindow(FluentWindow):
         descs = {"mica_alt": "Mica Alt: a deeper tint of your wallpaper. Windows uses it for tabbed apps.",
                  "mica": "Mica: a subtle tint of your wallpaper.",
                  "acrylic": "Acrylic: frosted glass that blurs what's behind the window.",
+                 "blur": "Blur: a clear, smooth blur of what's behind the window, without Acrylic's grain.",
                  "solid": "Solid: a plain theme colour."}
         row = self.backdrop_row
         row.desc.setText(descs[cfg["backdrop"]])
@@ -937,11 +938,7 @@ class SettingsWindow(FluentWindow):
             row.set_note("Transparency effects are off in Windows Settings > Personalization > Colors.")
         else:
             row.set_note("")
-        native_tb = cfg["titlebar"] == "windows"
         self.tint_row.setEnabled(not solid)
-        self.tint_row.set_note("The Windows title bar keeps the raw material: Windows can't tint it. "
-                               "The tint covers the body."
-                               if native_tb and not solid else "", "sub")
         self.keep_row.setEnabled(not solid)
 
     # ------------------------------------------------------------ history

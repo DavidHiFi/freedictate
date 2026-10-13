@@ -182,6 +182,10 @@ QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
     background: {field}; border: 1px solid {rgba(p.line, 0.9)}; border-bottom: 1px solid {rgba(p.sub, 0.6)};
     border-radius: 6px; padding: 5px 9px; selection-background-color: {p.accent}; selection-color: {p.on_accent}; }}
 QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border-bottom: 2px solid {p.accent}; }}
+QLineEdit#valueBox {{ border: 1px solid transparent; border-bottom: 1px solid transparent; background: {rgba(p.field, 0.55)};
+    padding: 3px 8px; color: {p.sub}; }}
+QLineEdit#valueBox:hover {{ background: {hover}; color: {p.text}; }}
+QLineEdit#valueBox:focus {{ background: {field}; color: {p.text}; border-bottom: 2px solid {p.accent}; }}
 QLineEdit:disabled, QPlainTextEdit:disabled, QSpinBox:disabled {{ color: {rgba(p.text, 0.4)}; background: {rgba(p.field, 0.4)}; }}
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; border: none; }}
 

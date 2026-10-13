@@ -127,7 +127,7 @@ def test_tint_stays_usable_with_windows_titlebar(qapp, env):
     win = open_window(qapp, cfg, env)
     try:
         assert win.tint_row.isEnabled()
-        assert "raw material" in win.tint_row.note.text()
+        assert win.tint_row.note.text() == ""     # the caption takes the tint since 3.0.3
         if not (native.backdrop_supported() and native.transparency_enabled()):
             pytest.skip("no systembackdrop on this machine")
         win.set_look("mica_alt", 0.0, cfg["backdrop_when_inactive"])
@@ -279,3 +279,57 @@ def test_ai_tidy_off_hides_its_rows(qapp, env):
         win.close()
         win.deleteLater()
         pump(qapp)
+
+
+def test_slider_values_can_be_typed(qapp, env):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from freedictate.ui.widgets import Slider
+    sl = Slider(0, 100, 65, "%")
+    got = []
+    sl.changed.connect(got.append)
+    sl.show()
+    pump(qapp)
+    box = sl.v
+    assert box.text() == "65%"
+    box.setFocus()
+    box.selectAll()
+    QTest.keyClicks(box, "87%")
+    QTest.keyClick(box, Qt.Key.Key_Return)
+    pump(qapp)
+    assert sl.value() == 87 and box.text() == "87%" and got[-1] == 87
+    box.setFocus()
+    box.selectAll()
+    QTest.keyClicks(box, "250")                       # out of range: clamped
+    QTest.keyClick(box, Qt.Key.Key_Return)
+    pump(qapp)
+    assert sl.value() == 100 and box.text() == "100%"
+    box.setFocus()
+    box.selectAll()
+    QTest.keyClicks(box, "abc")                       # nonsense: the value stays
+    QTest.keyClick(box, Qt.Key.Key_Return)
+    pump(qapp)
+    assert sl.value() == 100 and box.text() == "100%"
+    box.setFocus()
+    box.selectAll()
+    QTest.keyClicks(box, "12")
+    QTest.keyClick(box, Qt.Key.Key_Escape)            # Esc cancels
+    pump(qapp)
+    assert sl.value() == 100 and box.text() == "100%"
+    sl.s.setValue(40)                                 # dragging updates the box
+    assert box.text() == "40%"
+    sl.close()
+
+
+def test_blur_is_a_material_choice(qapp, env):
+    from freedictate.config import CHOICES
+    assert "blur" in CHOICES["backdrop"]
+    cfg = fresh_cfg(backdrop="blur")
+    assert cfg["backdrop"] == "blur"
+    win = open_window(qapp, cfg, env)
+    try:
+        assert win.backdrop_row.desc.text().startswith("Blur:")
+        assert win.effective_backdrop() in ("blur", "solid")   # offscreen tests have no real HWND to blur
+    finally:
+        win.dispose()
+        win.close()
