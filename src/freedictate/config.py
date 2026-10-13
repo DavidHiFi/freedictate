@@ -32,8 +32,8 @@ DEFAULTS: dict[str, Any] = {
     "end_punctuation": True,
     "voice_commands": True,
     "replacements": [],             # [{"find": str, "replace": str}]
-    "ai_tidy": False,               # rewrite each take with a local Ollama model
-    "ai_model": "qwen3:4b-instruct",
+    "ai_tidy": False,               # rewrite each take with a writing model (writer.py)
+    "ai_model": "standard",         # light | standard (writer.CATALOG)
     # overlay
     "overlay": True,
     "overlay_position": "bottom",   # bottom | top
@@ -77,6 +77,7 @@ CHOICES: dict[str, tuple] = {
     "overlay_position": ("bottom", "top"),
     "accent_source": ("theme", "windows"),
     "backdrop": ("mica_alt", "mica", "acrylic", "blur", "solid"),
+    "ai_model": ("light", "standard"),
     "overlay_backdrop": ("mica_alt", "mica", "acrylic", "blur", "solid"),
     "titlebar": ("custom", "windows"),
     "device": ("auto", "cpu", "cuda"),

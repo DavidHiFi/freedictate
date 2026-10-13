@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QCompleter, QFileDialog, QFrame, QH
                                QMessageBox, QProgressBar, QPushButton, QScrollArea,
                                QSizePolicy, QSpinBox, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import APP_NAME, REPO_URL, __version__, audio, hotkeys, models, paths, system, tidy
+from .. import APP_NAME, REPO_URL, __version__, audio, hotkeys, models, paths, system, writer
 from ..log import log
 from . import icons, native, theme
 from .widgets import (Banner, Card, Combo, HotkeyEdit, LevelMeter, NavButton, Row, Segmented, Slider, StatusDot,
@@ -425,8 +425,8 @@ class SettingsWindow(FluentWindow):
         timer.setEnabled(cfg["overlay"])
         card.add(Row("Recording bar", "A small bar on screen while it listens and transcribes.", bar))
         card.add(Row("Bar position", "", pos))
-        mat_row = Row("Bar material", "Same choices as Window material, with its tint. Set when the bar "
-                      "appears, not live.", mat)
+        mat_row = Row("Bar material", "Uses the window's tint over a picture of what's behind the bar, "
+                      "taken as it appears.", mat)
         if not native.backdrop_supported():
             mat_row.set_note("Materials need Windows 11 22H2 or later. The bar stays solid.")
         elif not native.transparency_enabled():
@@ -502,23 +502,21 @@ class SettingsWindow(FluentWindow):
     # ------------------------------------------------------------ models
     def _page_models(self, page: Page) -> None:
         card = page.section("Models", "Larger models are more accurate and slower. Each downloads once.")
-        self.model_rows: dict[str, tuple[Row, QLabel, QPushButton, QPushButton]] = {}
-        for info in models.CATALOG:
-            state = label("", "sub")
-            act = button("Use")
-            delete = button("", "flat", icon="trash")
-            delete.setToolTip("Delete this model from disk")
-            delete.setAccessibleName(f"Delete {info.title}")
-            desc = f"{info.note} {_mb(info.size_mb * 1_000_000)}."
-            if info.english_only:
-                desc += " English only."
-            row = Row(info.title, desc, state)
-            row.controls.addWidget(act)
-            row.controls.addWidget(delete)
-            act.clicked.connect(lambda _=False, n=info.name: self._use_model(n))
-            delete.clicked.connect(lambda _=False, n=info.name: self._delete_model(n))
-            card.add(row)
-            self.model_rows[info.name] = (row, state, act, delete)
+        self.model_combo = Combo([], self.cfg["model"], width=300)
+        self.model_combo.setSizeAdjustPolicy(Combo.SizeAdjustPolicy.AdjustToContents)
+        self.model_combo.currentIndexChanged.connect(lambda _: self._refresh_models(light=True))
+        self.model_btn = button("Use", "primary")
+        self.model_btn.clicked.connect(self._model_btn_clicked)
+        self.model_row = Row("Speech model", "", self.model_combo)
+        self.model_row.controls.addWidget(self.model_btn)
+        card.add(self.model_row)
+        self.spare_combo = Combo([], "", width=300)
+        self.spare_combo.setSizeAdjustPolicy(Combo.SizeAdjustPolicy.AdjustToContents)
+        self.spare_del = button("Delete", "", icon="trash")
+        self.spare_del.clicked.connect(self._delete_spare)
+        self.spare_row = Row("Other downloaded models", "Delete one to free up disk space.", self.spare_combo)
+        self.spare_row.controls.addWidget(self.spare_del)
+        card.add(self.spare_row)
         self._downloaded_cache: set[str] = set()
 
         card = page.section("Graphics card", "An NVIDIA graphics card makes the large models many times faster.")
@@ -561,58 +559,83 @@ class SettingsWindow(FluentWindow):
         card.add(Row("Skip silent parts", "Cuts pauses before transcribing. Faster, and stops made-up words in silence.", vad))
 
     def _refresh_models(self, light: bool = False) -> None:
+        """Fill both model lists and set the button for the model shown. The
+        list shows the chosen model until you pick another to look at."""
         if not light:
             self._downloaded_cache = set(models.downloaded())
-        ms = self.engine.ms
-        for name, (row, state, act, delete) in self.model_rows.items():
-            have = name in self._downloaded_cache
-            using = name == ms.active and self.engine.model is not None
-            chosen = name == self.cfg["model"]
-            if chosen and ms.status == "downloading" and ms.wanted == name:
-                done, total = ms.progress
-                state.setText(f"Downloading {done * 100 // total if total else 0}%")
-                act.setText("Cancel")
-                act.setProperty("kind", "")
-            elif chosen and ms.status == "loading":
-                state.setText("Loading")
-                act.setText("Use")
-                act.setEnabled(False)
-            else:
-                state.setText("In use" if using else ("Downloaded" if have else ""))
-                act.setText("Use" if have else "Download")
-                act.setEnabled(not using)
-                act.setProperty("kind", "" if have else "primary")
-            delete.setVisible(have and not using and not (chosen and ms.status in ("downloading", "loading")))
-            act.style().unpolish(act)
-            act.style().polish(act)
-            act.setVisible(not using)
+        ms, have = self.engine.ms, self._downloaded_cache
+        shown = self.model_combo.value() or self.cfg["model"]
+        if not light or self.model_combo.count() == 0:
+            items = []
+            for info in models.CATALOG:
+                if info.name == ms.active and self.engine.model is not None:
+                    state = "in use"
+                elif info.name in have:
+                    state = "downloaded"
+                else:
+                    state = _mb(info.size_mb * 1_000_000)
+                items.append((info.name, f"{info.title} ({state})"))
+            self.model_combo.set_items(items, shown)
+        info = models.BY_NAME.get(shown)
+        desc = info.note + (" English only." if info and info.english_only else "") if info else ""
+        self.model_row.desc.setText(desc)
+        self.model_row.desc.setVisible(bool(desc))
+        btn, note = self.model_btn, ""
+        using = shown == ms.active and self.engine.model is not None
+        if shown == ms.wanted and ms.status == "downloading":
+            done, total = ms.progress
+            note = f"Downloading {done * 100 // total if total else 0}%"
+            btn.setText("Cancel")
+            btn.setProperty("kind", "")
+        elif shown == self.cfg["model"] and ms.status == "loading":
+            note = "Loading"
+            btn.setText("Use")
+        elif using:
+            note = "In use on the graphics card." if ms.device == "cuda" else "In use on the processor."
+        else:
+            btn.setText("Use" if shown in have else "Download")
+            btn.setProperty("kind", "primary")
+        btn.setVisible(not using)
+        btn.setEnabled(ms.status != "loading")
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+        self.model_row.set_note(note, "value")
+
+        spare = [m for m in models.CATALOG
+                 if m.name in have and m.name not in (ms.active, self.cfg["model"], ms.wanted)]
+        self.spare_combo.set_items([(m.name, f"{m.title} ({_mb(m.size_mb * 1_000_000)})")
+                                    for m in spare], self.spare_combo.value() or "")
+        Card.show_row(self.spare_row, bool(spare))
         self._update_lang_note()
 
-    def _use_model(self, name: str) -> None:
+    def _model_btn_clicked(self) -> None:
+        name = self.model_combo.value()
         ms = self.engine.ms
         if ms.status == "downloading" and ms.wanted == name:
             self.engine.cancel_download()
             if ms.active:
                 self.cfg["model"] = ms.active
-        else:
-            if not self.cfg.update({"model": name}):
-                # Same model as configured (e.g. retrying after a failed
-                # download): cfg.update reported no change, so ask the engine
-                # directly or the button would do nothing until a restart.
-                self.engine.ensure_model(force=True)
+        elif not self.cfg.update({"model": name}):
+            # Same model as configured (e.g. retrying after a failed
+            # download): cfg.update reported no change, so ask the engine
+            # directly or the button would do nothing until a restart.
+            self.engine.ensure_model(force=True)
         self._refresh_models()
         self.refresh_status()
 
-    def _delete_model(self, name: str) -> None:
-        info = models.BY_NAME[name]
+    def _delete_spare(self) -> None:
+        name = self.spare_combo.value()
+        info = models.BY_NAME.get(name)
+        if not info:
+            return
         if QMessageBox.question(self, "Delete model", f"Delete {info.title} from this PC? "
                                 f"You can download it again later.") != QMessageBox.StandardButton.Yes:
             return
         if not models.delete(name):
-            QMessageBox.information(self, "Delete model",
-                                    f"{info.title} is in use right now, so it can't be deleted. "
-                                    f"Switch to another model first.")
+            QMessageBox.information(self, "Delete model", f"{info.title} couldn't be deleted. "
+                                    "It may be in use; restart FreeDictate and try again.")
         self._refresh_models()
+
 
     def _refresh_gpu(self) -> None:
         if models.gpu_libs_present():
@@ -733,20 +756,26 @@ class SettingsWindow(FluentWindow):
 
     def _page_text_ai(self, page: Page) -> None:
         cfg = self.cfg
-        card = page.section("AI tidy-up", "A small AI model on this PC rewrites each take after it's "
-                            "transcribed. Runs through Ollama; nothing leaves your PC.")
+        card = page.section("AI tidy-up", "A small writing model on this PC rewrites each take after it's "
+                            "transcribed. Nothing leaves your PC.")
         on = Toggle(cfg["ai_tidy"])
-        card.add(Row("Tidy with AI", "Removes stumbles, false starts and repeats, and punctuates long "
-                     "run-on takes. Keeps your words and order. Adds about a second. If the answer doesn't "
-                     "match what you said, the plain transcript is pasted instead.", on))
-
+        card.add(Row("Tidy with AI", "Removes stumbles, false starts and repeats, and punctuates long run-on "
+                     "takes. Keeps your words and their order. If the result doesn't match what you said, the "
+                     "plain transcript is pasted instead.", on))
         self.ai_model = Combo([], cfg["ai_model"], width=220)
+        self.ai_model.setSizeAdjustPolicy(Combo.SizeAdjustPolicy.AdjustToContents)
         self.ai_model.currentIndexChanged.connect(lambda _: self._ai_model_changed())
         self.ai_get = button("Download", "primary", icon="download")
-        self.ai_get.clicked.connect(self._ai_download)
-        self.ai_get.hide()        # shown once Ollama says the model is missing
-        self.ai_model_row = Row("Model", "", self.ai_model)
+        self.ai_get.clicked.connect(self._ai_get_clicked)
+        self.ai_del = button("", "flat", icon="trash")
+        self.ai_del.setToolTip("Delete this writing model")
+        self.ai_del.setAccessibleName("Delete writing model")
+        self.ai_del.clicked.connect(self._ai_delete)
+        self.ai_model_row = Row("Writing model", "", self.ai_model)
         self.ai_model_row.controls.addWidget(self.ai_get)
+        self.ai_model_row.controls.addWidget(self.ai_del)
+        self.ai_get.hide()        # both shown once the check below says what's on disk
+        self.ai_del.hide()
         card.add(self.ai_model_row)
 
         def set_on(enabled: bool) -> None:
@@ -755,7 +784,8 @@ class SettingsWindow(FluentWindow):
             if enabled:
                 self._ai_refresh()
         on.toggled.connect(set_on)
-        self._ai_pull: dict = {}
+        self._ai_job: dict = {}
+        self._ai_cancel = threading.Event()
         self._ai_timer = QTimer(self)
         self._ai_timer.setInterval(250)
         self._ai_timer.timeout.connect(self._ai_tick)
@@ -764,54 +794,59 @@ class SettingsWindow(FluentWindow):
             QTimer.singleShot(0, self._ai_refresh)
 
     def _ai_refresh(self) -> None:
-        """Fill the model list from Ollama and say what's missing. Ollama is
-        asked off the UI thread: starting it can take a few seconds."""
-        if self._ai_pull.get("busy"):
+        """Fill the writing model list and say what's missing. Checking the
+        graphics card starts the engine once, so it runs off the UI thread."""
+        if self._ai_job.get("busy") or self._ai_job.get("checking"):
             return
+        self._ai_job["checking"] = True
 
         def work():
-            started = tidy.start()
-            self._ai_pull["state"] = (started, tidy.installed(), tidy.models() if started else [])
-        self._ai_pull["state"] = None
-        threading.Thread(target=work, daemon=True, name="ollama-check").start()
+            self._ai_job["state"] = (writer.downloaded(), writer.engine_installed(), writer.gpu(),
+                                     writer.recommended())
+            self._ai_job["checking"] = False
+        threading.Thread(target=work, daemon=True, name="writer-check").start()
         self._ai_timer.start()
 
     def _ai_tick(self) -> None:
-        p = self._ai_pull
-        if p.pop("refresh", False):
-            self.ai_get.setEnabled(True)
+        job = self._ai_job
+        if job.pop("refresh", False):
             self._ai_refresh()
             return
-        if p.get("busy"):
-            done, total = p.get("progress", (0, 0))
-            pct = f" {done * 100 // total}%" if total else ""
-            self.ai_model_row.set_note(f"Downloading{pct}", "value")
+        if job.get("busy"):
+            done, total = job.get("progress", (0, 0))
+            what = job.get("what", "")
+            self.ai_model_row.set_note(f"Downloading {what} {done * 100 // total if total else 0}%", "value")
             return
-        if "error" in p:
-            self.ai_model_row.set_note(f"Download failed: {p.pop('error')}", "danger")
-        state = p.get("state")
+        state = job.get("state")
         if state is None:
             return
         self._ai_timer.stop()
-        p["state"] = None
-        running, installed, names = state
+        job["state"] = None
+        have, engine, (gpu_name, _), rec = state
         want = self.cfg["ai_model"]
-        have = want in names or (want + ":latest") in names
-        self.ai_model.set_items([(n, n) for n in sorted(set(names) | {want})], want)
-        self.ai_get.setVisible(running and not have)
-        if not installed:
-            self.ai_model_row.set_note('Needs Ollama. Install it from <a href="https://ollama.com/download">'
-                                       'ollama.com</a>, then come back here.', "warn")
-            self.ai_model_row.note.setTextFormat(Qt.TextFormat.RichText)
-            self.ai_model_row.note.setOpenExternalLinks(True)
-        elif not running:
-            self.ai_model_row.set_note("Ollama is installed but didn't start. Open it once, then try again.",
-                                       "warn")
-        elif not have:
-            self.ai_model_row.set_note(f"{want} isn't downloaded yet. Until it is, takes are pasted as "
+        items = []
+        for m in writer.CATALOG:
+            items.append((m.name, m.title + (" (recommended)" if m.name == rec else "")))
+        self.ai_model.set_items(items, want)
+        info = writer.BY_NAME[want]
+        self.ai_model_row.desc.setText(info.note)
+        self.ai_model_row.desc.show()
+        ready = want in have and engine
+        self.ai_get.setText("Download")
+        self.ai_get.setVisible(not ready)
+        self.ai_del.setVisible(want in have)
+        error = job.pop("error", "")
+        if error:
+            self.ai_model_row.set_note(f"Download failed: {error}", "danger")
+        elif engine and not gpu_name:
+            self.ai_model_row.set_note("Needs a graphics card. On the processor alone it takes about 11 seconds "
+                                       "per take, so it stays off.", "warn")
+        elif not ready:
+            size = (0 if want in have else info.size_mb * 1_000_000) + (0 if engine else writer.ENGINE_SIZE)
+            self.ai_model_row.set_note(f"Download {_mb(size)} to start. Until then, takes are pasted as "
                                        "transcribed.", "warn")
         else:
-            self.ai_model_row.set_note("")
+            self.ai_model_row.set_note(f"Ready. Runs on {gpu_name}." if gpu_name else "Ready.", "value")
 
     def _ai_model_changed(self) -> None:
         name = self.ai_model.value()
@@ -819,24 +854,45 @@ class SettingsWindow(FluentWindow):
             self.cfg["ai_model"] = name
             self._ai_refresh()
 
-    def _ai_download(self) -> None:
+    def _ai_get_clicked(self) -> None:
+        job = self._ai_job
+        if job.get("busy"):
+            self._ai_cancel.set()
+            return
         name = self.cfg["ai_model"]
-        p = self._ai_pull
-        p.update(busy=True, progress=(0, 0))
-        self.ai_get.setEnabled(False)
+        self._ai_cancel = threading.Event()
+        cancel = self._ai_cancel
+        job.update(busy=True, progress=(0, 0), what="")
+        self.ai_get.setText("Cancel")
 
         def work():
             try:
-                tidy.pull(name, lambda d, t: p.__setitem__("progress", (d, t)))
-                tidy.warm(name)
+                if not writer.engine_installed():
+                    job["what"] = "engine"
+                    writer.download_engine(lambda d, t: job.__setitem__("progress", (d, t)), cancel)
+                job["what"] = writer.BY_NAME[name].title.lower() + " model"
+                writer.download_model(name, lambda d, t: job.__setitem__("progress", (d, t)), cancel)
+            except InterruptedError:
+                pass
             except Exception as e:
-                log.exception("Downloading %s failed", name)
-                p["error"] = str(e)[:200]
+                log.exception("Downloading writing model %s failed", name)
+                job["error"] = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
             finally:
-                p["busy"] = False
-                p["refresh"] = True   # the UI thread picks this up in _ai_tick
-        threading.Thread(target=work, daemon=True, name="ollama-pull").start()
+                job["busy"] = False
+                job["refresh"] = True   # picked up on the UI thread by _ai_tick
+                if self.cfg["ai_tidy"] and not writer.ready(name):
+                    writer.prepare(name)
+        threading.Thread(target=work, daemon=True, name="writer-download").start()
         self._ai_timer.start()
+
+    def _ai_delete(self) -> None:
+        name = self.cfg["ai_model"]
+        title = writer.BY_NAME[name].title
+        if QMessageBox.question(self, "Delete writing model", f"Delete the {title} writing model from this PC? "
+                                "You can download it again later.") != QMessageBox.StandardButton.Yes:
+            return
+        writer.delete_model(name)
+        self._ai_refresh()
 
     def _add_repl(self, find: str, rep: str, focus: bool = False) -> None:
         w = QWidget()
@@ -1166,7 +1222,7 @@ class SettingsWindow(FluentWindow):
         card.add(Row("Check for updates automatically", "Once a day, from GitHub. Nothing installs without you.", auto_upd))
         pre = Toggle(cfg["update_prereleases"])
         pre.toggled.connect(lambda on: cfg.update({"update_prereleases": on}))
-        card.add(Row("Include test versions", "Get pre-releases early. They may have rough edges.", pre))
+        card.add(Row("Include test versions", "Get pre-releases early. They may have bugs.", pre))
         self.update_btn = button("Check now", "", icon="refresh")
         self.update_btn.clicked.connect(lambda: self.app.check_updates(manual=True))
         self.update_progress = QProgressBar()
@@ -1335,7 +1391,8 @@ class SettingsWindow(FluentWindow):
 
         card = page.section("Built with")
         credits = label(
-            "Speech recognition by OpenAI Whisper, run through faster-whisper (SYSTRAN) and CTranslate2 (OpenNMT). "
+            "Speech recognition by OpenAI Whisper, run through faster-whisper (SYSTRAN) and CTranslate2 (OpenNMT), "
+            "and NVIDIA Parakeet through onnx-asr. AI tidy-up by Qwen3 models (Apache 2.0) run with llama.cpp. "
             "Interface built with Qt for Python. Audio through PortAudio and sounddevice. "
             "FreeDictate is open source under the MIT license.", "sub", wrap=True)
         credits.setContentsMargins(16, 12, 16, 12)

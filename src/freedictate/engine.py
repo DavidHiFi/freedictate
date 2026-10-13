@@ -16,7 +16,7 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import audio, hotkeys, models, output, textproc, tidy
+from . import audio, hotkeys, models, output, textproc, writer
 from .config import Config
 from .history import History
 from .log import log
@@ -65,7 +65,7 @@ class Engine:
         self._matcher = hotkeys.Matcher(cfg["hotkey"]) if hotkeys.is_valid(cfg["hotkey"]) else hotkeys.Matcher("ctrl+win")
         self._take_app = ""
         self.suspended = False     # True while Settings records a new hotkey
-        self._tidy_warned = False  # "Ollama isn't running" is said once per session
+        self._tidy_warned = False  # "AI tidy-up isn't ready" is said once per session
         cfg.on_change(self._config_changed)
 
     # ---------------------------------------------------------------- state
@@ -109,20 +109,17 @@ class Engine:
             self.prepare_tidy()
 
     def prepare_tidy(self) -> None:
-        """Start Ollama and load the tidy-up model in the background, so the
-        first take doesn't wait for it."""
-        model = self.cfg["ai_model"]
-
-        def work():
-            if tidy.start() and tidy.has_model(model):
-                tidy.warm(model)
-        threading.Thread(target=work, daemon=True, name="tidy-warm").start()
+        """Load the writing model in the background, so the first take doesn't
+        wait for it."""
+        if not writer.ready(self.cfg["ai_model"]):
+            writer.prepare(self.cfg["ai_model"])
 
     def shutdown(self) -> None:
         self._stop.set()
         self._download_cancel.set()
         self.recorder.stop()
         self._jobs.put(None)
+        writer.stop()
         t = getattr(self, "_transcriber", None)
         if t is not None and t is not threading.current_thread() and t.is_alive():
             # Let a take in flight finish writing history before App.quit() closes the db.
@@ -135,9 +132,12 @@ class Engine:
             self.ensure_model(force="model" not in keys)
         if keys & {"hotkey", "hotkey_mode", "model"}:
             self.emit("state", {"state": self.state})
-        if keys & {"ai_tidy", "ai_model"} and self.cfg["ai_tidy"]:
+        if keys & {"ai_tidy", "ai_model"}:
             self._tidy_warned = False
-            self.prepare_tidy()
+            if self.cfg["ai_tidy"]:
+                self.prepare_tidy()
+            else:
+                writer.stop()
 
     # --------------------------------------------------------------- models
     def ensure_model(self, force: bool = False) -> None:
@@ -407,14 +407,15 @@ class Engine:
         cfg = self.cfg
         if not cfg["ai_tidy"]:
             return None
-        if not tidy.running() and not tidy.start(wait=8):
+        reason = writer.ready(cfg["ai_model"])
+        if reason:
             if not self._tidy_warned:
                 self._tidy_warned = True
                 self.emit("error", {"title": "AI tidy-up is off for now",
-                                    "text": "Ollama isn't running or isn't installed, so the plain "
-                                            "transcript was pasted. See Text and pasting in Settings."})
+                                    "text": f"{reason} The plain transcript was pasted. "
+                                            "See Text and pasting in Settings."})
             return None
-        out = tidy.rewrite(text, cfg["ai_model"], cfg["vocabulary"])
+        out = writer.rewrite(text, cfg["ai_model"], cfg["vocabulary"])
         return textproc.apply_replacements(out, cfg["replacements"]) if out else None
 
     def _do_file(self, take: Take) -> None:

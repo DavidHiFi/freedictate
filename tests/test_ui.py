@@ -7,6 +7,10 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
+# fresh_cfg() saves settings: never let a script that imports this module write
+# the real profile (it happened once, through a probe outside pytest).
+if not os.environ.get("FREEDICTATE_HOME"):
+    raise RuntimeError("Set FREEDICTATE_HOME to a scratch folder before importing the UI tests")
 
 import pytest
 from PySide6.QtCore import QEventLoop, QTimer
@@ -251,20 +255,40 @@ def test_silence_row_only_shows_for_press_to_start(qapp, env):
         pump(qapp)
 
 
-def test_ai_tidy_rows_follow_the_mode_and_ollama_state(qapp, env, monkeypatch):
-    from freedictate import tidy
-    monkeypatch.setattr(tidy, "start", lambda wait=10.0: True)
-    monkeypatch.setattr(tidy, "installed", lambda: True)
-    monkeypatch.setattr(tidy, "models", lambda: ["gemma3:4b"])
-    win = open_window(qapp, fresh_cfg(ai_tidy=True, ai_model="qwen3:4b-instruct", window_page="text"), env)
+def test_ai_tidy_offers_the_download_with_the_engine_size(qapp, env, monkeypatch):
+    from freedictate import writer
+    monkeypatch.setattr(writer, "downloaded", lambda: [])
+    monkeypatch.setattr(writer, "engine_installed", lambda: False)
+    monkeypatch.setattr(writer, "gpu", lambda: ("", 0))
+    monkeypatch.setattr(writer, "recommended", lambda: "standard")
+    win = open_window(qapp, fresh_cfg(ai_tidy=True, ai_model="standard", window_page="text"), env)
     try:
         deadline = time.monotonic() + 3
         while win.ai_get.isHidden() and time.monotonic() < deadline:
             pump(qapp)
         assert not win.ai_model_row.isHidden()
-        assert not win.ai_get.isHidden()                       # chosen model missing: offer the download
-        assert "isn't downloaded" in win.ai_model_row.note.text()
-        assert win.ai_model.findData("gemma3:4b") >= 0
+        assert not win.ai_get.isHidden() and win.ai_del.isHidden()
+        assert "Download 2.5 GB to start" in win.ai_model_row.note.text()   # model plus the 32 MB engine
+        assert "recommended" in win.ai_model.currentText()
+    finally:
+        win.close()
+        win.deleteLater()
+        pump(qapp)
+
+
+def test_ai_tidy_says_when_there_is_no_graphics_card(qapp, env, monkeypatch):
+    from freedictate import writer
+    monkeypatch.setattr(writer, "downloaded", lambda: ["light"])
+    monkeypatch.setattr(writer, "engine_installed", lambda: True)
+    monkeypatch.setattr(writer, "gpu", lambda: ("", 0))
+    monkeypatch.setattr(writer, "recommended", lambda: "standard")
+    win = open_window(qapp, fresh_cfg(ai_tidy=True, ai_model="light", window_page="text"), env)
+    try:
+        deadline = time.monotonic() + 3
+        while "graphics card" not in win.ai_model_row.note.text() and time.monotonic() < deadline:
+            pump(qapp)
+        assert "Needs a graphics card" in win.ai_model_row.note.text()
+        assert win.ai_get.isHidden() and not win.ai_del.isHidden()
     finally:
         win.close()
         win.deleteLater()
@@ -275,6 +299,29 @@ def test_ai_tidy_off_hides_its_rows(qapp, env):
     win = open_window(qapp, fresh_cfg(ai_tidy=False), env)
     try:
         assert win.ai_model_row.isHidden()
+    finally:
+        win.close()
+        win.deleteLater()
+        pump(qapp)
+
+
+def test_speech_models_are_one_dropdown(qapp, env, monkeypatch):
+    from freedictate import models
+    monkeypatch.setattr(models, "downloaded", lambda: ["large-v3", "tiny.en"])
+    win = open_window(qapp, fresh_cfg(model="large-v3", window_page="models"), env)
+    try:
+        win._refresh_models()
+        assert win.model_combo.count() == len(models.CATALOG)
+        assert win.model_combo.value() == "large-v3" and "in use" in win.model_combo.currentText()
+        assert win.model_btn.isHidden()                           # the model in use needs no button
+        assert win.spare_combo.count() == 1 and not win.spare_row.isHidden()   # tiny.en can be deleted
+        win.model_combo.setCurrentIndex(win.model_combo.findData("parakeet-tdt-0.6b-v2"))
+        pump(qapp)
+        assert win.model_btn.text() == "Download" and not win.model_btn.isHidden()
+        assert "NVIDIA" in win.model_row.desc.text()
+        win.model_combo.setCurrentIndex(win.model_combo.findData("tiny.en"))
+        pump(qapp)
+        assert win.model_btn.text() == "Use"
     finally:
         win.close()
         win.deleteLater()

@@ -37,17 +37,17 @@ class ModelInfo:
 CATALOG: list[ModelInfo] = [
     ModelInfo("tiny.en", "Tiny", 75, True, "Fastest. Fine for short notes."),
     ModelInfo("base.en", "Base", 145, True, "Fast and decent."),
-    ModelInfo("small.en", "Small", 484, True, "Good balance on most PCs."),
+    ModelInfo("small.en", "Small", 484, True, "Runs well on most PCs."),
     ModelInfo("medium.en", "Medium", 1530, True, "More accurate, needs a fast CPU or a GPU."),
     ModelInfo("distil-large-v3.5", "Distil Large v3.5", 1515, True,
               "About as accurate as Large v3 for English, and faster."),
     ModelInfo("parakeet-tdt-0.6b-v2", "Parakeet v2", 661, True,
-              "NVIDIA's English model. More accurate than Large v3 and fast on the processor alone. "
-              "Doesn't use Words it should know.", engine="parakeet", repo="istupakov/parakeet-tdt-0.6b-v2-onnx"),
+              "NVIDIA's English model. More accurate than Large v3, and fast without a graphics card. "
+              "Ignores Words it should know.", engine="parakeet", repo="istupakov/parakeet-tdt-0.6b-v2-onnx"),
     ModelInfo("large-v3-turbo", "Large v3 Turbo", 1620, False, "Close to Large v3, much faster. Best with an NVIDIA GPU."),
     ModelInfo("tiny", "Tiny (multilingual)", 75, False, "Any language. Fastest."),
     ModelInfo("base", "Base (multilingual)", 145, False, "Any language."),
-    ModelInfo("small", "Small (multilingual)", 484, False, "Any language. Good balance."),
+    ModelInfo("small", "Small (multilingual)", 484, False, "Any language. Runs well on most PCs."),
     ModelInfo("medium", "Medium (multilingual)", 1530, False, "Any language. More accurate."),
     ModelInfo("large-v3", "Large v3 (multilingual)", 3090, False, "Any language. The most accurate Whisper model, and the slowest."),
 ]
@@ -139,16 +139,20 @@ def _repo_cache(repo: str) -> Path:
 
 
 def download(name: str, progress: ProgressFn | None = None, cancel: threading.Event | None = None) -> Path:
-    """Download a model file by file. Progress comes from watching the cache's
-    blob folder, which also counts partial files, so it moves smoothly inside
-    the 1.5 GB model.bin. Cancel takes effect between files; a partial file
-    resumes on the next attempt."""
+    eng = engine_of(name)
+    return download_files(repo_id(name), _FILES[eng], _MAIN_FILE[eng], progress, cancel)
+
+
+def download_files(repo: str, patterns: list[str], main_file: str, progress: ProgressFn | None = None,
+                   cancel: threading.Event | None = None, revision: str | None = None) -> Path:
+    """Download matching files of a Hugging Face repo, one by one. Progress
+    comes from watching the cache's blob folder, which also counts partial
+    files, so it moves smoothly inside a 1.5 GB file. Cancel takes effect
+    between files; a partial file resumes on the next attempt."""
     import fnmatch
     from huggingface_hub import HfApi, hf_hub_download
-    repo = repo_id(name)
-    eng = engine_of(name)
-    info = HfApi().model_info(repo, files_metadata=True)
-    wanted = [s for s in info.siblings if any(fnmatch.fnmatch(s.rfilename, p) for p in _FILES[eng])]
+    info = HfApi().model_info(repo, revision=revision, files_metadata=True)
+    wanted = [s for s in info.siblings if any(fnmatch.fnmatch(s.rfilename, p) for p in patterns)]
     total = sum(s.size or 0 for s in wanted) or 1
     blobs = _repo_cache(repo) / "blobs"
     stop = threading.Event()
@@ -176,8 +180,8 @@ def download(name: str, progress: ProgressFn | None = None, cancel: threading.Ev
             raise InterruptedError("Download cancelled")
     finally:
         stop.set()
-    if path is None or not (path / _MAIN_FILE[eng]).exists():
-        raise RuntimeError(f"{name} downloaded incompletely")
+    if path is None or not (path / main_file).exists():
+        raise RuntimeError(f"{repo} downloaded incompletely")
     if progress:
         progress(total, total)
     return path

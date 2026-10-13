@@ -46,7 +46,7 @@ Extract the zip wherever you like — a USB stick works — and run `FreeDictate
 Everything lives in one window with seven pages:
 
 - **Dictation**: hotkey and mode, microphone with a live level test, sounds (start, stop, and a tone when the text arrives) and volume, auto-stop on silence for press-to-start takes, vocabulary hints passed to the model, pause.
-- **Speech model**: pick a model, from Whisper *Tiny* (75 MB, fastest) to *Large v3*, or NVIDIA's *Parakeet v2* for English. CPU or NVIDIA GPU. A fallback model keeps dictation working while a new one downloads.
+- **Speech model**: pick a model, from Whisper *Tiny* (75 MB, fastest) to *Large v3*, or NVIDIA's *Parakeet v2* for English. CPU or NVIDIA GPU. One list picks the model; a second deletes models you no longer use. A fallback model keeps dictation working while a new one downloads.
 - **Text and pasting**: filler removal, repeated-word removal ("the the" becomes "the"), capitalization, end punctuation, spoken punctuation and lists ("comma", "full stop", "question mark", "hyphen", "open bracket", "dot point", "new line", "new paragraph"; say "literal" first to type the word), an optional AI tidy-up, find-and-replace rules, output method (paste / Shift+Insert / type / clipboard only) and clipboard restore.
 - **Appearance** — ten themes plus *Match Windows*, the Windows accent colour, any installed font, and the window material: **Mica Alt, Mica, Acrylic, Blur** or solid, with a tint slider. Every slider has a value box you can type a number into. Backdrops need Windows 11 22H2 and transparency turned on; otherwise you get the solid look automatically. The title bar can be FreeDictate's own or the standard Windows one; with the Windows title bar the material runs under it and the tint covers the body (Windows can't tint its own caption, which keeps the raw material).
 - **History**: searchable dictation history in SQLite on your PC, retention in days, clear or export. When the AI tidy-up changed a take, you can copy what you originally said. Transcribe audio and video files here too.
@@ -79,11 +79,13 @@ Accuracy, measured on 30 LibriSpeech clips and 21 accented clips (Scottish, Iris
 
 ## AI tidy-up
 
-Optional, under *Text and pasting*. A small model running in [Ollama](https://ollama.com) on your PC removes stumbles, false starts and repeats, and punctuates run-on takes, keeping your words and their order. It adds about a second per take on a recent NVIDIA card. If the answer drops much of what you said, changes a number, or reads like a reply rather than your words, FreeDictate pastes the plain transcript instead. The default model is `qwen3:4b-instruct` (2.5 GB); Settings downloads it through Ollama.
+Optional, under *Text and pasting*. A small writing model on your PC removes stumbles, false starts and repeats, and punctuates run-on takes, keeping your words and their order. If the answer drops much of what you said, changes a number, or reads like a reply rather than your words, FreeDictate pastes the plain transcript instead.
+
+FreeDictate runs the model itself with [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT licence). Settings downloads the engine (32 MB, checked against a pinned SHA-256) together with one of two models: *Light* (1.1 GB, for graphics cards under 6 GB) or *Standard* (2.5 GB, about a second per take on a recent card). It needs a graphics card from any maker; on the processor alone a clean-up takes about 11 seconds, so the setting says so and stays off. The model leaves graphics memory after 15 minutes without a take.
 
 ## Privacy
 
-Recording, transcription, history and settings stay on your PC. The AI tidy-up talks only to Ollama on your own PC. The only network traffic is the model download you choose and the optional update check against the GitHub Releases API — both visible and disableable in Settings. No telemetry, no accounts.
+Recording, transcription, history and settings stay on your PC. The AI tidy-up runs on your own PC. The only network traffic is the model downloads you choose and the optional update check against the GitHub Releases API, both visible and switchable in Settings. No telemetry, no accounts.
 
 ## If you also use Wispr Flow
 

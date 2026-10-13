@@ -1,32 +1,20 @@
-import io
-import json
 import sqlite3
 
 import numpy as np
 
-from freedictate import history, models, tidy
+from freedictate import history, models, writer
 
 
-class _Resp(io.BytesIO):
-    status = 200
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _fake_ollama(monkeypatch, answer: str, thinking: bool = False):
+def _fake_model(monkeypatch, answer: str):
+    """Writing model that is ready and answers with ``answer``."""
     sent = []
+    monkeypatch.setattr(writer, "ready", lambda name: "")
+    monkeypatch.setattr(writer._server, "ensure", lambda name, wait=60.0: True)
 
-    def request(path, body=None, timeout=5.0):
-        sent.append((path, body))
-        if path == "/api/show":
-            return _Resp(json.dumps({"capabilities": ["completion"] + (["thinking"] if thinking else [])}).encode())
-        return _Resp(json.dumps({"message": {"content": answer}}).encode())
-    monkeypatch.setattr(tidy, "_request", request)
-    tidy._thinking.clear()
+    def chat(system, text, timeout):
+        sent.append((system, text))
+        return answer
+    monkeypatch.setattr(writer._server, "chat", chat)
     return sent
 
 
@@ -34,43 +22,60 @@ TAKE = "I want, I want you to update the readme and then and then push it to Git
 
 
 def test_rewrite_returns_clean_text_and_strips_wrappers(monkeypatch):
-    _fake_ollama(monkeypatch, "Here is the cleaned text:\n\"I want you to update the readme and then push it "
-                              "to GitHub when the tests pass.\"")
-    out = tidy.rewrite(TAKE, "m")
+    _fake_model(monkeypatch, "Here is the cleaned text:\n\"I want you to update the readme and then push it "
+                             "to GitHub when the tests pass.\"")
+    out = writer.rewrite(TAKE, "standard")
     assert out == "I want you to update the readme and then push it to GitHub when the tests pass."
 
 
 def test_rewrite_rejects_an_answer_instead_of_the_text(monkeypatch):
-    _fake_ollama(monkeypatch, "Sure, I can help with that.")
-    assert tidy.rewrite(TAKE, "m") is None
+    _fake_model(monkeypatch, "Sure, I can help with that.")
+    assert writer.rewrite(TAKE, "standard") is None
 
 
 def test_a_changed_number_is_rejected(monkeypatch):
     take = "it was using like 10 percent of my CPU and then and then the other one was at 40"
-    _fake_ollama(monkeypatch, "It was using about -10 percent of my CPU, and the other one was at 40.")
-    assert tidy.rewrite(take, "m") is None
+    _fake_model(monkeypatch, "It was using about -10 percent of my CPU, and the other one was at 40.")
+    assert writer.rewrite(take, "standard") is None
 
 
-def test_think_is_only_sent_to_reasoning_models(monkeypatch):
-    sent = _fake_ollama(monkeypatch, TAKE, thinking=False)
-    tidy.rewrite(TAKE, "plain")
-    assert "think" not in [b for p, b in sent if p == "/api/chat"][0]
-    sent = _fake_ollama(monkeypatch, TAKE, thinking=True)
-    tidy.rewrite(TAKE, "reasoner")
-    assert [b for p, b in sent if p == "/api/chat"][0]["think"] is False
+def test_vocabulary_reaches_the_prompt(monkeypatch):
+    sent = _fake_model(monkeypatch, TAKE)
+    writer.rewrite(TAKE, "standard", "TestCord, , MochaCord")
+    assert sent[0][0].endswith("Spell these names exactly as written: TestCord, MochaCord.")
 
 
 def test_dashes_bold_and_curly_quotes_are_normalised(monkeypatch):
-    _fake_ollama(monkeypatch, "I want you to update the readme — and then push it to GitHub when the "
-                              "tests pass. **Don’t** wait.")
-    out = tidy.rewrite(TAKE + " don't wait", "m")
+    _fake_model(monkeypatch, "I want you to update the readme \u2014 and then push it to GitHub when the "
+                             "tests pass. **Don\u2019t** wait.")
+    out = writer.rewrite(TAKE + " don't wait", "standard")
     assert out == "I want you to update the readme, and then push it to GitHub when the tests pass. Don't wait."
 
 
-def test_short_takes_skip_the_model(monkeypatch):
-    sent = _fake_ollama(monkeypatch, "x")
-    assert tidy.rewrite("yes please", "m") is None
+def test_short_takes_and_unready_models_skip_the_model(monkeypatch):
+    sent = _fake_model(monkeypatch, "x")
+    assert writer.rewrite("yes please", "standard") is None
+    monkeypatch.setattr(writer, "ready", lambda name: "Not downloaded yet.")
+    assert writer.rewrite(TAKE, "standard") is None
     assert sent == []
+
+
+def test_without_a_graphics_card_the_tidy_up_stays_off(monkeypatch):
+    monkeypatch.setattr(writer, "engine_installed", lambda: True)
+    monkeypatch.setattr(writer, "gpu", lambda: ("", 0))
+    assert "graphics card" in writer.ready("standard")
+    monkeypatch.setattr(writer, "gpu", lambda: ("NVIDIA GeForce RTX 4070", 12010))
+    monkeypatch.setattr(writer, "model_path", lambda name: None)
+    assert writer.ready("standard") == "Not downloaded yet."
+    assert writer.recommended() == "standard"
+    monkeypatch.setattr(writer, "gpu", lambda: ("Small card", 4096))
+    assert writer.recommended() == "light"
+
+
+def test_writing_models_are_pinned():
+    for m in writer.CATALOG:
+        assert len(m.revision) == 40 and m.file.endswith(".gguf") and m.size_mb > 0
+    assert len(writer.ENGINE_SHA256) == 64 and writer.ENGINE_TAG in writer.ENGINE_URL
 
 
 def test_history_keeps_the_original_and_migrates_old_databases(tmp_path):

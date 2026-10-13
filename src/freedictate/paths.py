@@ -45,6 +45,7 @@ else:
 SETTINGS = DATA / "settings.json"
 HISTORY_DB = DATA / "history.db"
 CUDA_DIR = _cuda_root / "cuda"
+WRITER_DIR = _cuda_root / "writer"   # llama.cpp engine for the AI tidy-up
 
 
 def portable() -> bool:
