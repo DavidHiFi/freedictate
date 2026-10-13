@@ -45,11 +45,11 @@ Extract the zip wherever you like — a USB stick works — and run `FreeDictate
 
 Everything lives in one window with seven pages:
 
-- **Dictation** — hotkey and mode, microphone with a live level test, sounds and volume, auto-stop on silence, vocabulary hints passed to the model, pause.
-- **Speech model** — pick a Whisper model: from *Tiny* (75 MB, fastest) to *Large v3 Turbo*, English-only or multilingual, CPU or NVIDIA GPU. A fallback model keeps dictation working while a new one downloads.
-- **Text and pasting** — filler removal, capitalization, end punctuation, voice commands ("new line", "new paragraph"), find-and-replace rules, output method (paste / Shift+Insert / type / clipboard only) and clipboard restore.
+- **Dictation**: hotkey and mode, microphone with a live level test, sounds (start, stop, and a tone when the text arrives) and volume, auto-stop on silence for press-to-start takes, vocabulary hints passed to the model, pause.
+- **Speech model**: pick a model, from Whisper *Tiny* (75 MB, fastest) to *Large v3*, or NVIDIA's *Parakeet v2* for English. CPU or NVIDIA GPU. A fallback model keeps dictation working while a new one downloads.
+- **Text and pasting**: filler removal, repeated-word removal ("the the" becomes "the"), capitalization, end punctuation, spoken punctuation and lists ("comma", "full stop", "question mark", "hyphen", "open bracket", "dot point", "new line", "new paragraph"; say "literal" first to type the word), an optional AI tidy-up, find-and-replace rules, output method (paste / Shift+Insert / type / clipboard only) and clipboard restore.
 - **Appearance** — ten themes plus *Match Windows*, the Windows accent colour, any installed font, and the window material: **Mica Alt, Mica, Acrylic** or solid, with a tint slider. Backdrops need Windows 11 22H2 and transparency turned on; otherwise you get the solid look automatically. The title bar can be FreeDictate's own or the standard Windows one; with the Windows title bar the material runs under it and the tint covers the body (Windows can't tint its own caption, which keeps the raw material).
-- **History** — searchable dictation history in SQLite on your PC, retention in days, clear or export. Transcribe audio and video files here too.
+- **History**: searchable dictation history in SQLite on your PC, retention in days, clear or export. When the AI tidy-up changed a take, you can copy what you originally said. Transcribe audio and video files here too.
 - **General** — start at login (normal or elevated), update settings, prerelease channel, export/import settings.
 - **About** — version, licences, links.
 
@@ -61,15 +61,29 @@ Everything lives in one window with seven pages:
 | Base | 145 MB | Fast and decent |
 | Small | 484 MB | The default; good balance |
 | Medium | 1.5 GB | More accuracy |
-| Distil Large v3 | 1.5 GB | Near-Large accuracy, ~2× faster |
-| Large v3 Turbo | 1.6 GB | Most accurate; best with a GPU |
+| Distil Large v3.5 | 1.5 GB | English. About as accurate as Large v3, and faster |
+| Parakeet v2 | 661 MB | English. The most accurate here, and fast on the CPU alone. Doesn't use vocabulary hints |
+| Large v3 Turbo | 1.6 GB | Close to Large v3, much faster; best with a GPU |
+| Large v3 | 3.1 GB | The most accurate Whisper model, any language; best with a GPU |
 | multilingual variants | — | 30+ languages via *Detect automatically* |
 
 With an NVIDIA GPU, Settings offers a one-click CUDA support download. Without it, everything runs on CPU.
 
+Accuracy, measured on 30 LibriSpeech clips and 21 accented clips (Scottish, Irish, southern British, Indian English) from EdAcc, as word error rate (lower is better):
+
+| Model | Clean speech | Accented speech |
+| --- | --- | --- |
+| Parakeet v2 (CPU, int8) | 2.6% | 9.5% |
+| Large v3 (GPU) | 4.2% | 10.2% |
+| Distil Large v3.5 (GPU) | 5.1% | 10.9% |
+
+## AI tidy-up
+
+Optional, under *Text and pasting*. A small model running in [Ollama](https://ollama.com) on your PC removes stumbles, false starts and repeats, and punctuates run-on takes, keeping your words and their order. It adds about a second per take on a recent NVIDIA card. If the answer drops much of what you said, changes a number, or reads like a reply rather than your words, FreeDictate pastes the plain transcript instead. The default model is `qwen3:4b-instruct` (2.5 GB); Settings downloads it through Ollama.
+
 ## Privacy
 
-Recording, transcription, history and settings stay on your PC. The only network traffic is the model download you choose and the optional update check against the GitHub Releases API — both visible and disableable in Settings. No telemetry, no accounts.
+Recording, transcription, history and settings stay on your PC. The AI tidy-up talks only to Ollama on your own PC. The only network traffic is the model download you choose and the optional update check against the GitHub Releases API — both visible and disableable in Settings. No telemetry, no accounts.
 
 ## If you also use Wispr Flow
 

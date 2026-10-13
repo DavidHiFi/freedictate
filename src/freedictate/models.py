@@ -348,6 +348,7 @@ def load(name: str, device: str, compute_type: str, cpu_threads: int = 0):
         m = ParakeetModel(path, cpu_threads)
         list(m.transcribe(np.zeros(16000, dtype=np.float32), vad_filter=False)[0])
         return m, "cpu", "int8"
+    from faster_whisper import WhisperModel
     path = local_path(name)
     dev, ct = resolve_device(device, compute_type)
     log.info("Loading %s on %s (%s)", name, dev, ct)

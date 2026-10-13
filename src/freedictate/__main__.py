@@ -98,6 +98,30 @@ def _self_test(target: str) -> int:
         return f"{len(get_speech_timestamps(np.zeros(16000, dtype=np.float32)))} segments in silence"
     step("silero vad (onnxruntime)", vad)
     step("av (file decoding)", lambda: __import__("av").__version__)
+
+    def decode():
+        import tempfile
+        from pathlib import Path as _P
+        import wave
+        from . import audio
+        with tempfile.TemporaryDirectory() as d:
+            p = _P(d) / "tone.wav"
+            with wave.open(str(p), "wb") as w:
+                w.setnchannels(2)
+                w.setsampwidth(2)
+                w.setframerate(44100)
+                w.writeframes(b"\x00\x10" * 2 * 44100)
+            n = len(audio.decode_file(str(p)))
+        if abs(n - 16000) > 200:
+            raise RuntimeError(f"1 s of 44.1 kHz stereo decoded to {n} samples")
+        return "44.1 kHz stereo WAV resampled to 16 kHz mono"
+    step("audio file decoding", decode)
+
+    def parakeet():
+        import onnx_asr
+        from onnx_asr.preprocessors import preprocessor  # noqa: F401
+        return f"onnx-asr {onnx_asr.__version__}"
+    step("parakeet runtime", parakeet)
     step("sounddevice", lambda: f"{len(__import__('sounddevice').query_devices())} audio devices")
 
     def qt():

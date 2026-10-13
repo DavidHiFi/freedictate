@@ -114,3 +114,30 @@ def test_parakeet_splits_long_takes_into_chunks():
     # A long take goes through the VAD; silence alone gives nothing to decode.
     long = np.zeros(16000 * 90, dtype=np.float32)
     assert next(m.transcribe(long)[0]).text == ""
+
+
+def test_both_engines_load_through_models_load(monkeypatch, tmp_path):
+    """models.load must reach each engine's real constructor (a dropped import
+    once broke every Whisper model while all unit tests passed)."""
+    import faster_whisper
+    calls = []
+
+    class FakeWhisper:
+        def __init__(self, *a, **k):
+            calls.append("whisper")
+
+        def transcribe(self, *a, **k):
+            return iter([]), None
+    monkeypatch.setattr(faster_whisper, "WhisperModel", FakeWhisper)
+    monkeypatch.setattr(models, "local_path", lambda name: tmp_path)
+    monkeypatch.setattr(models, "resolve_device", lambda d, c: ("cpu", "int8"))
+    m, dev, ct = models.load("tiny.en", "cpu", "int8")
+    assert calls == ["whisper"] and (dev, ct) == ("cpu", "int8")
+
+    class FakeParakeet(models.ParakeetModel):
+        def __init__(self, path, cpu_threads=0):
+            calls.append("parakeet")
+    monkeypatch.setattr(models, "ParakeetModel", FakeParakeet)
+    monkeypatch.setattr(FakeParakeet, "transcribe", lambda self, a, **k: (iter([]), None))
+    m, dev, ct = models.load("parakeet-tdt-0.6b-v2", "cuda", "auto")
+    assert calls[-1] == "parakeet" and (dev, ct) == ("cpu", "int8")
