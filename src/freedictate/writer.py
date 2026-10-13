@@ -257,6 +257,7 @@ class _Server:
                 try:
                     with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=1) as r:
                         if r.status == 200:
+                            self._warm()
                             return True
                 except (OSError, urllib.error.URLError):
                     pass
@@ -264,6 +265,20 @@ class _Server:
             log.warning("The writing model didn't start")
             self._stop()
             return False
+
+    def _warm(self) -> None:
+        """One tiny request right after start. The first request on a fresh
+        server sets up the graphics card's kernels; without this the first
+        take after startup timed out (measured: over 20 s, then 5 s)."""
+        t0 = time.monotonic()
+        try:
+            # A take-sized input, through the real prompt: after a driver update
+            # the first real take otherwise paid the shader build (25 s measured).
+            sample = "so I was thinking we should go through the settings and check that every page works " * 12
+            self.chat(_PROMPT, sample, 90, max_tokens=8)
+            log.info("Writing model warmed up in %.1fs", time.monotonic() - t0)
+        except (OSError, ValueError, KeyError, IndexError, urllib.error.URLError) as e:
+            log.warning("Warming the writing model failed: %s", e)
 
     def _stop(self) -> None:
         if self.proc is not None:
@@ -285,11 +300,13 @@ class _Server:
                 log.info("Writing model idle; freeing graphics memory")
                 self.stop()
 
-    def chat(self, system: str, text: str, timeout: float) -> str:
+    def chat(self, system: str, text: str, timeout: float, max_tokens: int | None = None) -> str:
         self.last_used = time.monotonic()
         body = {"messages": [{"role": "system", "content": system},
                              {"role": "user", "content": f"<dictation>\n{text}\n</dictation>"}],
                 "temperature": 0, "chat_template_kwargs": {"enable_thinking": False}}
+        if max_tokens:
+            body["max_tokens"] = max_tokens
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions",
                                      json.dumps(body).encode(), {"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -349,7 +366,7 @@ def clean_output(out: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", out)
 
 
-def rewrite(text: str, name: str, vocabulary: str = "", timeout: float = 20.0) -> str | None:
+def rewrite(text: str, name: str, vocabulary: str = "", timeout: float = 30.0) -> str | None:
     """The tidied text, or None when the take is too short, the model isn't
     ready or is slow, or its answer doesn't look like the same message."""
     if len(_words(text)) < MIN_WORDS or ready(name):

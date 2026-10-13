@@ -343,8 +343,8 @@ class SettingsWindow(FluentWindow):
 
         card = page.section("Microphone")
         self.mic_combo = Combo([], cfg["input_device"], width=300)
-        self.mic_combo.setMaximumWidth(380)
-        self.mic_combo.setSizeAdjustPolicy(Combo.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.mic_combo.setMaximumWidth(460)
+        self.mic_combo.setSizeAdjustPolicy(Combo.SizeAdjustPolicy.AdjustToContents)
         self._fill_mics()
         refresh = button("", "flat", icon="refresh")
         refresh.setToolTip("Look for microphones again")
@@ -353,6 +353,7 @@ class SettingsWindow(FluentWindow):
         mic_row = Row("Microphone", "", self.mic_combo)
         mic_row.controls.addWidget(refresh)
         self.mic_combo.currentIndexChanged.connect(lambda _: self._mic_changed())
+        self.mic_combo.currentTextChanged.connect(self.mic_combo.setToolTip)   # long device names get cut off
         card.add(mic_row)
         self.meter = LevelMeter(width=220)
         self.meter_btn = button("Test", "", icon="mic")
@@ -376,7 +377,7 @@ class SettingsWindow(FluentWindow):
         self._update_lang_note()
 
         vocab = QLineEdit(cfg["vocabulary"])
-        vocab.setPlaceholderText("Names, brands, jargon, separated by commas")
+        vocab.setPlaceholderText("Names, separated by commas")
         vocab.setMinimumWidth(300)
         vocab.editingFinished.connect(lambda: cfg.update({"vocabulary": vocab.text().strip()}))
         self._vocab_row = Row("Words it should know", "Helps with names and terms it would otherwise misspell.", vocab)
