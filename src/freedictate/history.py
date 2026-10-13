@@ -35,6 +35,7 @@ class Entry:
     text: str
     model: str
     app: str
+    raw: str = ""   # the transcript before the AI tidy-up; empty when none ran
 
 
 class History:
@@ -45,6 +46,9 @@ class History:
         self._db = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(entries)")}
+        if "raw" not in cols:
+            self._db.execute("ALTER TABLE entries ADD COLUMN raw TEXT NOT NULL DEFAULT ''")
         self._listeners: list = []
 
     def on_change(self, fn) -> None:
@@ -57,11 +61,12 @@ class History:
             except Exception:
                 log.exception("History listener failed")
 
-    def add(self, text: str, seconds: float, model: str = "", app: str = "", ts: float | None = None) -> int:
+    def add(self, text: str, seconds: float, model: str = "", app: str = "", ts: float | None = None,
+            raw: str = "") -> int:
         with self._lock:
             cur = self._db.execute(
-                "INSERT INTO entries(ts, seconds, words, text, model, app) VALUES (?,?,?,?,?,?)",
-                (ts or time.time(), seconds, word_count(text), text, model, app))
+                "INSERT INTO entries(ts, seconds, words, text, model, app, raw) VALUES (?,?,?,?,?,?,?)",
+                (ts or time.time(), seconds, word_count(text), text, model, app, raw))
             rid = cur.lastrowid
         self._changed()
         return rid
@@ -71,15 +76,15 @@ class History:
             return [Entry(*r) for r in self._db.execute(sql, args).fetchall()]
 
     def recent(self, limit: int = 5) -> list[Entry]:
-        return self._rows("SELECT id, ts, seconds, words, text, model, app FROM entries ORDER BY ts DESC LIMIT ?", (limit,))
+        return self._rows("SELECT id, ts, seconds, words, text, model, app, raw FROM entries ORDER BY ts DESC LIMIT ?", (limit,))
 
     def search(self, query: str = "", limit: int = 200, offset: int = 0) -> list[Entry]:
         if query.strip():
             like = "%" + query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            return self._rows("SELECT id, ts, seconds, words, text, model, app FROM entries "
+            return self._rows("SELECT id, ts, seconds, words, text, model, app, raw FROM entries "
                               "WHERE text LIKE ? ESCAPE '\\' ORDER BY ts DESC LIMIT ? OFFSET ?",
                               (like, limit, offset))
-        return self._rows("SELECT id, ts, seconds, words, text, model, app FROM entries "
+        return self._rows("SELECT id, ts, seconds, words, text, model, app, raw FROM entries "
                           "ORDER BY ts DESC LIMIT ? OFFSET ?", (limit, offset))
 
     def count(self, query: str = "") -> int:
@@ -117,7 +122,7 @@ class History:
         return {"count": total[0], "words": total[1], "seconds": total[2], "words_week": recent[0]}
 
     def export_text(self, target: Path) -> int:
-        rows = self._rows("SELECT id, ts, seconds, words, text, model, app FROM entries ORDER BY ts", ())
+        rows = self._rows("SELECT id, ts, seconds, words, text, model, app, raw FROM entries ORDER BY ts", ())
         with open(target, "w", encoding="utf-8", newline="\n") as f:
             for e in rows:
                 f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(e.ts))} [{e.seconds:.1f}s] {e.text}\n")

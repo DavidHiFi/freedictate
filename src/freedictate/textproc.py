@@ -121,6 +121,15 @@ def _spoken(text: str) -> str:
     return re.sub(r"\x03(\d+)\x03", lambda m: kept[int(m.group(1))], text)
 
 
+def apply_replacements(text: str, replacements: list[dict] | None) -> str:
+    for r in replacements or ():
+        find = r.get("find", "").strip()
+        if find:
+            pattern = re.compile(r"(?<!\w)" + re.escape(find) + r"(?!\w)", re.IGNORECASE)
+            text = pattern.sub(lambda _m, rep=r.get("replace", ""): rep, text)
+    return text
+
+
 def _cap_lines(text: str) -> str:
     """Capitalize the first letter of the text and of each line or list item."""
     return re.sub(r"(^|\n)((?:[-*] |\d+\. )?\s*[a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
@@ -138,11 +147,7 @@ def clean(raw: str, *, remove_fillers: bool = True, voice_commands: bool = True,
         text = re.sub(r"^[,.\s]+", "", text)
     if repeats:
         text = remove_repeats(text)
-    for r in replacements or ():
-        find = r.get("find", "").strip()
-        if find:
-            pattern = re.compile(r"(?<!\w)" + re.escape(find) + r"(?!\w)", re.IGNORECASE)
-            text = pattern.sub(lambda _m, rep=r.get("replace", ""): rep, text)
+    text = apply_replacements(text, replacements)
     if voice_commands:
         text = _spoken(text)
     if capitalize:

@@ -32,6 +32,9 @@ DEFAULTS: dict[str, Any] = {
     "end_punctuation": True,
     "voice_commands": True,
     "replacements": [],             # [{"find": str, "replace": str}]
+    "ai_tidy": "off",               # off | clean | agent  (local Ollama model)
+    "ai_model": "qwen3:4b",
+    "ai_agent_apps": "T3 Code (Nightly).exe, T3 Code.exe, WindowsTerminal.exe, Code.exe, Cursor.exe, claude.exe",
     # overlay
     "overlay": True,
     "overlay_position": "bottom",   # bottom | top
@@ -71,6 +74,7 @@ DEFAULTS: dict[str, Any] = {
 CHOICES: dict[str, tuple] = {
     "hotkey_mode": ("hold", "toggle", "both"),
     "output": ("paste", "paste_shift_insert", "type", "clipboard"),
+    "ai_tidy": ("off", "clean", "agent"),
     "overlay_position": ("bottom", "top"),
     "accent_source": ("theme", "windows"),
     "backdrop": ("mica_alt", "mica", "acrylic", "solid"),

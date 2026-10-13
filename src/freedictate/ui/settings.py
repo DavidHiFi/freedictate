@@ -1241,9 +1241,16 @@ class HistoryItem(QFrame):
         delete.setToolTip("Delete")
         delete.setAccessibleName("Delete dictation")
         delete.clicked.connect(self._delete)
+        original = button("", "flat", icon="undo")
+        original.setToolTip("Copy what you said, before the AI tidy-up")
+        original.setAccessibleName("Copy original dictation")
+        original.clicked.connect(self._copy_original)
+        lay.addWidget(original, 0, Qt.AlignmentFlag.AlignTop)
         lay.addWidget(copy, 0, Qt.AlignmentFlag.AlignTop)
         lay.addWidget(delete, 0, Qt.AlignmentFlag.AlignTop)
         self.copy_btn = copy
+        self.original_btn = original
+        original.setVisible(bool(entry.raw) and entry.raw != entry.text)
 
     @staticmethod
     def _meta_text(entry) -> str:
@@ -1263,6 +1270,12 @@ class HistoryItem(QFrame):
         self.entry = entry
         self.meta_label.setText(self._meta_text(entry))
         self.body_label.setText(self._body_text(entry))
+        self.original_btn.setVisible(bool(entry.raw) and entry.raw != entry.text)
+
+    def _copy_original(self) -> None:
+        self.win.app.copy(self.entry.raw)
+        self.original_btn.setIcon(icons.icon("check", theme.current().ok))
+        QTimer.singleShot(1200, lambda: self.original_btn.setIcon(icons.icon("undo", theme.current().text)))
 
     def _copy(self) -> None:
         self.win.app.copy(self.entry.text)

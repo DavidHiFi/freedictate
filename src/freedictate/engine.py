@@ -16,7 +16,7 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import audio, hotkeys, models, output, textproc
+from . import audio, hotkeys, models, output, textproc, tidy
 from .config import Config
 from .history import History
 from .log import log
@@ -65,6 +65,7 @@ class Engine:
         self._matcher = hotkeys.Matcher(cfg["hotkey"]) if hotkeys.is_valid(cfg["hotkey"]) else hotkeys.Matcher("ctrl+win")
         self._take_app = ""
         self.suspended = False     # True while Settings records a new hotkey
+        self._tidy_warned = False  # "Ollama isn't running" is said once per session
         cfg.on_change(self._config_changed)
 
     # ---------------------------------------------------------------- state
@@ -104,6 +105,18 @@ class Engine:
         self._transcriber.start()
         threading.Thread(target=self._poll_loop, daemon=True, name="hotkey").start()
         self.ensure_model()
+        if self.cfg["ai_tidy"] != "off":
+            self.prepare_tidy()
+
+    def prepare_tidy(self) -> None:
+        """Start Ollama and load the tidy-up model in the background, so the
+        first take doesn't wait for it."""
+        model = self.cfg["ai_model"]
+
+        def work():
+            if tidy.start() and tidy.has_model(model):
+                tidy.warm(model)
+        threading.Thread(target=work, daemon=True, name="tidy-warm").start()
 
     def shutdown(self) -> None:
         self._stop.set()
@@ -122,6 +135,9 @@ class Engine:
             self.ensure_model(force="model" not in keys)
         if keys & {"hotkey", "hotkey_mode", "model"}:
             self.emit("state", {"state": self.state})
+        if keys & {"ai_tidy", "ai_model"} and self.cfg["ai_tidy"] != "off":
+            self._tidy_warned = False
+            self.prepare_tidy()
 
     # --------------------------------------------------------------- models
     def ensure_model(self, force: bool = False) -> None:
@@ -367,9 +383,14 @@ class Engine:
             self.emit("nothing", {"reason": "empty"})
             return
         log.info("Transcribed %.1fs in %.2fs: %d chars", take.seconds, took, len(text))
+        before_tidy = ""
+        tidied = self._tidy(text, take.app)
+        if tidied:
+            before_tidy, text = text, tidied
+            took = time.monotonic() - t0
         if cfg["history_enabled"]:
             try:
-                self.history.add(text, take.seconds, self.ms.active, take.app)
+                self.history.add(text, take.seconds, self.ms.active, take.app, raw=before_tidy)
             except Exception:
                 log.exception("History write failed")
         delivered = text + (" " if cfg["trailing_space"] and cfg["output"] != "clipboard" and not text.endswith("\n") else "")
@@ -381,6 +402,23 @@ class Engine:
             self.emit("error", {"title": "That window runs as administrator",
                                 "text": "Windows blocks pasting into it. The text is on your clipboard. "
                                         "Turn on Run as administrator in Settings to paste there."})
+
+    def _tidy(self, text: str, app: str) -> str | None:
+        cfg = self.cfg
+        mode = cfg["ai_tidy"]
+        if mode == "off":
+            return None
+        if mode == "agent" and not _is_agent_app(app, cfg["ai_agent_apps"]):
+            mode = "clean"
+        if not tidy.running() and not tidy.start(wait=8):
+            if not self._tidy_warned:
+                self._tidy_warned = True
+                self.emit("error", {"title": "AI tidy-up is off for now",
+                                    "text": "Ollama isn't running or isn't installed, so the plain "
+                                            "transcript was pasted. See Text and pasting in Settings."})
+            return None
+        out = tidy.rewrite(text, mode, cfg["ai_model"], cfg["vocabulary"])
+        return textproc.apply_replacements(out, cfg["replacements"]) if out else None
 
     def _do_file(self, take: Take) -> None:
         self.emit("file", {"status": "working", "path": take.file})
@@ -394,6 +432,13 @@ class Engine:
             text = f"error: {e}"
         if take.on_text:
             take.on_text(text)
+
+
+def _is_agent_app(app: str, apps: str) -> bool:
+    """True when the take was dictated into one of the listed apps. An empty
+    list means every app."""
+    wanted = {a.strip().lower() for a in apps.split(",") if a.strip()}
+    return not wanted or app.lower() in wanted
 
 
 def _title(name: str) -> str:
