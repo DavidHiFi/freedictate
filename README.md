@@ -81,7 +81,7 @@ Accuracy, measured on 30 LibriSpeech clips and 21 accented clips (Scottish, Iris
 
 Optional, under *Text and pasting*. A small writing model on your PC removes stumbles, false starts and repeats, and punctuates run-on takes, keeping your words and their order. If the answer drops much of what you said, changes a number, or reads like a reply rather than your words, FreeDictate pastes the plain transcript instead.
 
-FreeDictate runs the model itself with [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT licence). Settings downloads the engine (32 MB, checked against a pinned SHA-256) together with one of two models: *Light* (1.1 GB, for graphics cards under 6 GB) or *Standard* (2.5 GB, about a second per take on a recent card). It needs a graphics card from any maker; on the processor alone a clean-up takes about 11 seconds, so the setting says so and stays off. The model leaves graphics memory after 15 minutes without a take.
+FreeDictate runs the model itself with [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT licence). Settings downloads the engine (32 MB, checked against a pinned SHA-256) together with one of two models: *Light* (1.1 GB, for graphics cards under 6 GB) or *Standard* (2.5 GB, about a second per take on a recent card). It needs a graphics card from any maker; on the processor alone a clean-up takes about 11 seconds, so the setting says so and stays off. The writing model loads only for takes that need it and leaves graphics memory after a few minutes without one (5 by default, adjustable under *Speech model › Memory*).
 
 ## Privacy
 

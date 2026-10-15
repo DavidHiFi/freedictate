@@ -252,12 +252,17 @@ class SettingsWindow(FluentWindow):
         titles = {"ready": "Ready", "listening": "Listening", "transcribing": "Transcribing",
                   "loading": "Getting ready", "error": "Not working"}
         title = "Paused" if e.paused else titles.get(state, state)
+        if not e.paused and state == "ready" and getattr(e, "model", None) is None \
+                and getattr(getattr(e, "ms", None), "active", "") == "":
+            title = "Unloaded to save VRAM"
         self.status_title.setText(title)
         self.status_dot.set_color(pal.sub if e.paused else getattr(pal, STATE_COLOR.get(state, "sub")))
         ms = e.ms
         lines = []
         if state == "error":
             lines.append(ms.error or "The speech model didn't load. See Speech model.")
+        elif getattr(e, "model", None) is None and not ms.active and state == "ready" and not e.paused:
+            lines.append("Models are unloaded. Nothing uses graphics memory right now.")
         elif ms.active:
             dev = "GPU" if ms.device == "cuda" else "CPU"
             lines.append(f"{_model_title(ms.active)} on {dev}")
@@ -539,6 +544,23 @@ class SettingsWindow(FluentWindow):
         device.currentIndexChanged.connect(lambda _: self.cfg.update({"device": device.value()}))
         card.add(Row("Run the model on", "Automatic uses the graphics card when GPU support is installed.", device))
         self._refresh_gpu()
+
+        card = page.section("Memory", "FreeDictate holds graphics memory while its models are loaded. "
+                            "Unloading gives it back to games and other apps when you're not dictating.")
+        idle = Toggle(self.cfg.get("idle_unload", True))
+        after = Combo([("1", "After 1 minute"), ("2", "After 2 minutes"), ("3", "After 3 minutes"),
+                       ("5", "After 5 minutes"), ("10", "After 10 minutes"), ("15", "After 15 minutes"),
+                       ("30", "After 30 minutes"), ("60", "After 1 hour")],
+                      str(self.cfg.get("idle_minutes", 5)), width=200)
+        after.setEnabled(idle.isChecked())
+        idle.toggled.connect(lambda on: (self.cfg.update({"idle_unload": on}), after.setEnabled(on)))
+        after.currentIndexChanged.connect(lambda _: self.cfg.update({"idle_minutes": int(after.value())}))
+        card.add(Row("Free graphics memory when idle",
+                     "Unloads the speech model (and the writing model) after a while without dictation. "
+                     "The next take reloads it automatically, a few seconds slower. Pausing unloads immediately.",
+                     idle))
+        self._idle_after_row = Row("Unload after", "", after)
+        card.add(self._idle_after_row)
 
         card = page.section("Fine tuning", "Defaults suit most people.")
         compute = Combo([("auto", "Automatic"), ("int8", "int8 (smallest, CPU)"), ("int8_float16", "int8 + float16 (GPU)"),

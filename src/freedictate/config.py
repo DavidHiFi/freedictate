@@ -65,6 +65,8 @@ DEFAULTS: dict[str, Any] = {
     "min_seconds": 0.4,
     "silence_peak": 0.004,
     "paste_delay_ms": 40,
+    "idle_unload": True,            # unload models after a while without dictation, freeing VRAM/RAM
+    "idle_minutes": 5,              # minutes without a take before unloading (1-120)
     # bookkeeping
     "first_run_done": False,
     "window_geometry": "",
@@ -88,6 +90,7 @@ RANGES: dict[str, tuple[float, float]] = {
     "sound_volume": (0, 100), "max_seconds": (10, 3600), "auto_stop_silence": (0, 30),
     "tint": (0, 100), "history_days": (0, 3650), "cpu_threads": (0, 64), "beam_size": (1, 10),
     "min_seconds": (0.1, 5), "silence_peak": (0.0, 0.2), "paste_delay_ms": (0, 1000),
+    "idle_minutes": (1, 120),
 }
 
 _OLD_BACKDROP = {"Acrylic": "acrylic", "Frosted glass": "acrylic", "Mica": "mica",

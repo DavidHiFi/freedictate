@@ -248,8 +248,15 @@ class App(QObject):
 
     def transcribe_file(self, path: str) -> None:
         if self.engine.model is None:
-            self.notify("The speech model isn't ready yet", "Try again when the tray icon turns blue.", error=True)
-            return
+            if self.engine.ms.status in ("downloading", "loading"):
+                self.notify("The speech model isn't ready yet", "Try again when the tray icon turns blue.", error=True)
+                return
+            if self.engine.cfg.get("idle_unload", True) and self.engine.ms.status == "idle":
+                # Unloaded after idle to save VRAM: reload, the worker waits for it.
+                self.engine.ensure_model()
+            else:
+                self.notify("The speech model isn't ready yet", "Try again when the tray icon turns blue.", error=True)
+                return
         self.show_settings("history")
         self.settings_window.file_started(path)
 

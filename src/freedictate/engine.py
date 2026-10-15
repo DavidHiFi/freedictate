@@ -59,6 +59,7 @@ class Engine:
         self._jobs: queue.Queue[Take | None] = queue.Queue()
         self._stop = threading.Event()
         self._load_lock = threading.Lock()     # guards the actual model load
+        self._decode_lock = threading.Lock()   # held while a take is decoding; unload waits for it
         self._serial_lock = threading.Lock()   # guards the serial/cancel swap only
         self._load_serial = 0
         self._download_cancel = threading.Event()
@@ -66,6 +67,7 @@ class Engine:
         self._take_app = ""
         self.suspended = False     # True while Settings records a new hotkey
         self._tidy_warned = False  # "AI tidy-up isn't ready" is said once per session
+        self._last_used = time.monotonic()  # last dictation activity; drives idle VRAM release
         cfg.on_change(self._config_changed)
 
     # ---------------------------------------------------------------- state
@@ -84,6 +86,8 @@ class Engine:
                 done, total = ms.progress
                 pct = f" {done * 100 // total}%" if total else ""
                 return f"Downloading {_title(ms.wanted)}{pct}"
+            if self.model is None and ms.status == "idle" and ms.wanted and not ms.active:
+                return f"Loading {_title(ms.wanted)}"
             return "Getting the speech model ready"
         if self.state == "error":
             return "Not working. Open Settings for details"
@@ -91,6 +95,12 @@ class Engine:
             return "Listening"
         if self.state == "transcribing":
             return "Transcribing"
+        if self.model is None and ms.status == "idle":
+            # Unloaded after a while without dictation to give VRAM/RAM back.
+            # The next take reloads it automatically.
+            mode = self.cfg["hotkey_mode"]
+            verb = {"hold": "Hold", "toggle": "Press", "both": "Hold or tap"}[mode]
+            return f"Unloaded to save VRAM. {verb} {hk} to dictate"
         if ms.status == "downloading" and ms.wanted != ms.active:
             done, total = ms.progress
             pct = f" ({done * 100 // total}%)" if total else ""
@@ -104,8 +114,13 @@ class Engine:
         self._transcriber = threading.Thread(target=self._transcribe_loop, daemon=True, name="transcriber")
         self._transcriber.start()
         threading.Thread(target=self._poll_loop, daemon=True, name="hotkey").start()
+        threading.Thread(target=self._idle_loop, daemon=True, name="idle-unload").start()
+        self._apply_idle_settings()
         self.ensure_model()
-        if self.cfg["ai_tidy"]:
+        if self.cfg["ai_tidy"] and not self.cfg.get("idle_unload", True):
+            # Idle unload is off, so VRAM is kept anyway: preload the writing
+            # model like before so the first tidied take is fast. Otherwise it
+            # loads lazily on the first take that needs it, holding no VRAM idle.
             self.prepare_tidy()
 
     def prepare_tidy(self) -> None:
@@ -132,12 +147,111 @@ class Engine:
             self.ensure_model(force="model" not in keys)
         if keys & {"hotkey", "hotkey_mode", "model"}:
             self.emit("state", {"state": self.state})
+        if keys & {"idle_minutes"}:
+            self._apply_idle_settings()
+        if keys & {"idle_unload"}:
+            if not self.cfg.get("idle_unload", True):
+                # Keeping VRAM again: make sure the model is back.
+                if self.model is None and self.ms.status == "idle":
+                    self.ensure_model(force=True)
+                if self.cfg["ai_tidy"]:
+                    self.prepare_tidy()
         if keys & {"ai_tidy", "ai_model"}:
             self._tidy_warned = False
             if self.cfg["ai_tidy"]:
-                self.prepare_tidy()
+                if not self.cfg.get("idle_unload", True):
+                    self.prepare_tidy()
             else:
                 writer.stop()
+
+    # -------------------------------------------------------- idle VRAM release
+    def _touch(self) -> None:
+        """Mark dictation activity. The idle watcher counts from here."""
+        self._last_used = time.monotonic()
+
+    def _apply_idle_settings(self) -> None:
+        """Push the idle timeout to the writing model server."""
+        try:
+            mins = float(self.cfg.get("idle_minutes", 5) or 5)
+        except (TypeError, ValueError):
+            mins = 5
+        mins = min(max(mins, 1), 120)
+        try:
+            writer.set_idle_seconds(int(mins * 60))
+        except Exception:
+            pass
+
+    def _idle_seconds(self) -> float:
+        try:
+            mins = float(self.cfg.get("idle_minutes", 5) or 5)
+        except (TypeError, ValueError):
+            mins = 5
+        return min(max(mins, 1), 120) * 60
+
+    def unload_model(self, reason: str = "idle") -> bool:
+        """Drop the speech model so its VRAM/RAM goes back to the system.
+
+        Only unloads when nothing is using it: not recording, transcribing,
+        loading or downloading, with an empty queue. Returns True when
+        something was actually freed. Reload happens on the next take."""
+        with self._load_lock:
+            if self.model is None:
+                return False
+            if self.state in ("listening", "transcribing"):
+                return False
+            if self.ms.status in ("downloading", "loading"):
+                return False
+            if not self._jobs.empty():
+                return False
+            if not self._decode_lock.acquire(blocking=False):
+                return False  # a file transcription is decoding right now
+            try:
+                m, self.model = self.model, None
+                self.ms.active, self.ms.device, self.ms.compute = "", "", ""
+                try:
+                    del m
+                except Exception:
+                    pass
+            finally:
+                self._decode_lock.release()
+        try:
+            models.free_memory()
+        except Exception:
+            pass
+        log.info("Unloaded speech model to free memory (%s)", reason)
+        self.emit("model", {"unloaded": True})
+        return True
+
+    def _idle_loop(self) -> None:
+        """Background watcher: unload the speech model after a while without
+        dictation, so games and other apps get the VRAM back."""
+        while not self._stop.is_set():
+            try:
+                if self.cfg.get("idle_unload", True) and self.model is not None:
+                    if self.ms.status == "idle" and self.state in ("ready", "error") \
+                            and self._jobs.empty() \
+                            and time.monotonic() - self._last_used >= self._idle_seconds():
+                        self.unload_model("idle")
+            except Exception:
+                log.exception("Idle unload check failed")
+            # Sleep in small steps so shutdown doesn't wait long.
+            for _ in range(15):
+                if self._stop.is_set():
+                    break
+                time.sleep(1)
+
+    def _wait_for_model(self, timeout: float = 120.0) -> bool:
+        """Wait for a reloading model after an idle unload. True when ready."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self._stop.is_set():
+                return False
+            if self.model is not None:
+                return True
+            if self.ms.status == "failed":
+                return False
+            time.sleep(0.25)
+        return self.model is not None
 
     # --------------------------------------------------------------- models
     def ensure_model(self, force: bool = False) -> None:
@@ -153,6 +267,9 @@ class Engine:
             self._download_cancel = threading.Event()
             cancel = self._download_cancel
         self.ms.wanted = want
+        self._touch()
+        if self.state == "ready" and self.model is None and self.ms.status == "idle":
+            self._set_state("loading")
         threading.Thread(target=self._load_worker, args=(want, serial, cancel), daemon=True,
                          name="model-loader").start()
 
@@ -186,6 +303,7 @@ class Engine:
             self.model = m
             self.ms.active, self.ms.device, self.ms.compute = want, dev, ct
             self.ms.status, self.ms.error = "idle", ""
+            self._touch()
             log.info("Ready with %s on %s (%s)", want, dev, ct)
             if self.state in ("loading", "error"):
                 self._set_state("ready")
@@ -239,7 +357,13 @@ class Engine:
 
     # ---------------------------------------------------------------- input
     def _usable(self) -> bool:
-        return self.model is not None and not self.paused and not self.suspended
+        if self.paused or self.suspended:
+            return False
+        if self.model is not None:
+            return True
+        # Unloaded after idle to save VRAM: still let the take start. Audio
+        # records while the model reloads, then transcription waits for it.
+        return bool(self.cfg.get("idle_unload", True)) and self.ms.status in ("idle", "failed")
 
     def _poll_loop(self) -> None:
         recording = False
@@ -298,6 +422,12 @@ class Engine:
             self.emit("error", {"title": "Couldn't open the microphone", "text": _short(e)})
             audio.play("error", self.cfg["sound_volume"] if self.cfg["sounds"] else 0)
             return False
+        self._touch()
+        if self.model is None:
+            # Reloading after an idle unload (or a failed load). Recording
+            # already runs so no speech is lost; the transcriber waits below.
+            log.info("Reloading speech model for a new take")
+            self.ensure_model()
         self._set_state("listening")
         audio.play("start", self.cfg["sound_volume"] if self.cfg["sounds"] else 0)
         return True
@@ -314,16 +444,28 @@ class Engine:
         if data is None or secs < float(self.cfg["min_seconds"]):
             self._set_state("ready")
             return
+        self._touch()
         self._set_state("transcribing")
         self._jobs.put(Take(data, secs, self._take_app))
 
     def toggle_pause(self) -> bool:
         self.paused = not self.paused  # the hotkey loop cancels a take in progress
         log.info("Paused" if self.paused else "Resumed")
+        if self.paused and self.cfg.get("idle_unload", True):
+            # Paused means no dictation for a while: give the memory back now
+            # instead of waiting for the idle timeout.
+            self.unload_model("paused")
+        elif not self.paused and self.model is None and self.cfg.get("idle_unload", True) \
+                and self.ms.status == "idle":
+            # Resume preloads so the next take is fast again.
+            self.ensure_model()
         self.emit("state", {"state": self.state})
         return self.paused
 
     def transcribe_file(self, path: str, on_text: Callable[[str], None]) -> None:
+        self._touch()
+        if self.model is None and self.cfg.get("idle_unload", True) and self.ms.status == "idle":
+            self.ensure_model()
         self._jobs.put(Take(None, 0.0, "", file=path, on_text=on_text))
 
     # --------------------------------------------------------- transcription
@@ -342,7 +484,12 @@ class Engine:
                 self.emit("error", {"title": "Transcription failed", "text": _short(e)})
             finally:
                 if self.state == "transcribing" and self._jobs.empty():
-                    self._set_state("ready" if self.model is not None else "error")
+                    if self.model is not None:
+                        self._set_state("ready")
+                    elif self.ms.status in ("downloading", "loading"):
+                        self._set_state("loading")
+                    else:
+                        self._set_state("error")
 
     def _decode(self, data) -> str:
         cfg = self.cfg
@@ -350,11 +497,15 @@ class Engine:
         info = models.BY_NAME.get(self.ms.active)
         if info and info.english_only:
             lang = "en"
-        segments, _ = self.model.transcribe(
-            data, language=None if lang == "auto" else lang, beam_size=int(cfg["beam_size"]),
-            vad_filter=bool(cfg["vad"]), initial_prompt=cfg["vocabulary"].strip() or None,
-            condition_on_previous_text=False)
-        return "".join(s.text for s in segments).strip()
+        with self._decode_lock:
+            model = self.model
+            if model is None:
+                raise RuntimeError("The speech model was unloaded.")
+            segments, _ = model.transcribe(
+                data, language=None if lang == "auto" else lang, beam_size=int(cfg["beam_size"]),
+                vad_filter=bool(cfg["vad"]), initial_prompt=cfg["vocabulary"].strip() or None,
+                condition_on_previous_text=False)
+            return "".join(s.text for s in segments).strip()
 
     def _clean(self, raw: str) -> str:
         c = self.cfg
@@ -371,9 +522,21 @@ class Engine:
             self.emit("nothing", {"reason": "silence"})
             audio.play("error", vol)
             return
+        if self.model is None:
+            # The model was unloaded while idle. It reloads on hotkey press,
+            # but a slow load can still be running when the take lands here.
+            self.emit("state", {"state": self.state})
+            if not self._wait_for_model():
+                log.warning("Speech model wasn't ready for a take; audio dropped")
+                self.emit("error", {"title": "The speech model is still loading",
+                                    "text": "Hold the shortcut again in a few seconds."})
+                if self.ms.status not in ("downloading", "loading"):
+                    self._set_state("error")
+                return
         t0 = time.monotonic()
         raw = self._decode(take.audio)
         took = time.monotonic() - t0
+        self._touch()
         if not raw or (raw.lower() in _PHANTOMS and peak < 0.05):
             log.info("Nothing recognised in %.1fs of audio", take.seconds)
             self.emit("nothing", {"reason": "empty"})
@@ -421,8 +584,12 @@ class Engine:
     def _do_file(self, take: Take) -> None:
         self.emit("file", {"status": "working", "path": take.file})
         try:
+            if self.model is None:
+                if not self._wait_for_model():
+                    raise RuntimeError("The speech model is still loading. Try again in a few seconds.")
             data = audio.decode_file(take.file)
             text = self._clean(self._decode(data))
+            self._touch()
         except Exception as e:
             # The caller waits for on_text either way, or its banner never clears.
             log.exception("Transcribing %s failed", take.file)

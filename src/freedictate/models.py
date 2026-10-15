@@ -301,6 +301,22 @@ def resolve_device(device: str, compute_type: str) -> tuple[str, str]:
     return "cpu", ("int8" if compute_type in ("auto", "float16", "int8_float16") else compute_type)
 
 
+def free_memory() -> None:
+    """Release GPU/CPU memory held by an unloaded model.
+
+    Deleting the Whisper object drops the reference, but CUDA blocks can
+    linger until the garbage collector runs and the allocator cache is
+    flushed. Best effort: never raises."""
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 class _Segment:
     def __init__(self, text: str):
         self.text = text

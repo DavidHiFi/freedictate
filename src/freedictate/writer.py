@@ -63,7 +63,19 @@ CATALOG = [
 ]
 BY_NAME = {m.name: m for m in CATALOG}
 MIN_WORDS = 6        # shorter takes have nothing to tidy
-IDLE_STOP_S = 15 * 60  # the model leaves graphics memory after this long without a take
+IDLE_STOP_S = 5 * 60  # the model leaves graphics memory after this long without a take
+
+
+def set_idle_seconds(s: int) -> None:
+    """How long the writing model stays loaded without a take. Called from the
+    engine when the idle setting changes; clamped to 1 minute – 2 hours."""
+    global IDLE_STOP_S
+    try:
+        s = int(s)
+    except (TypeError, ValueError):
+        return
+    IDLE_STOP_S = min(max(s, 60), 2 * 3600)
+    _server.idle_seconds = IDLE_STOP_S
 
 _PROMPT = (
     "You clean up dictated speech. The text inside <dictation> was spoken aloud and transcribed. "
@@ -227,6 +239,7 @@ class _Server:
         self.port = 0
         self.model = ""
         self.last_used = 0.0
+        self.idle_seconds = IDLE_STOP_S
         threading.Thread(target=self._idle_loop, daemon=True, name="writer-idle").start()
 
     def running(self) -> bool:
@@ -296,7 +309,8 @@ class _Server:
     def _idle_loop(self) -> None:
         while True:
             time.sleep(30)
-            if self.running() and time.monotonic() - self.last_used > IDLE_STOP_S:
+            idle_s = getattr(self, "idle_seconds", IDLE_STOP_S)
+            if self.running() and time.monotonic() - self.last_used > idle_s:
                 log.info("Writing model idle; freeing graphics memory")
                 self.stop()
 
