@@ -116,7 +116,14 @@ class Engine:
         threading.Thread(target=self._poll_loop, daemon=True, name="hotkey").start()
         threading.Thread(target=self._idle_loop, daemon=True, name="idle-unload").start()
         self._apply_idle_settings()
-        self.ensure_model()
+        if not self._instant_unload():
+            self.ensure_model()
+        else:
+            # Nothing lives in memory between takes: start unloaded and load
+            # on the first hotkey press. Recording starts before the model
+            # finishes reloading, so no speech is lost.
+            self.ms.wanted = self.cfg["model"]
+            self._set_state("ready")
         if self.cfg["ai_tidy"] and not self.cfg.get("idle_unload", True):
             # Idle unload is off, so VRAM is kept anyway: preload the writing
             # model like before so the first tidied take is fast. Otherwise it
@@ -147,15 +154,19 @@ class Engine:
             self.ensure_model(force="model" not in keys)
         if keys & {"hotkey", "hotkey_mode", "model"}:
             self.emit("state", {"state": self.state})
-        if keys & {"idle_minutes"}:
+        if keys & {"idle_seconds", "idle_unload"}:
             self._apply_idle_settings()
         if keys & {"idle_unload"}:
             if not self.cfg.get("idle_unload", True):
                 # Keeping VRAM again: make sure the model is back.
-                if self.model is None and self.ms.status == "idle":
+                if self.model is None and self.ms.status == "idle" and self._idle_seconds() > 0:
                     self.ensure_model(force=True)
                 if self.cfg["ai_tidy"]:
                     self.prepare_tidy()
+            else:
+                # Turning the feature on gives the memory back right away,
+                # not at the next idle check.
+                self.unload_model("idle unload enabled")
         if keys & {"ai_tidy", "ai_model"}:
             self._tidy_warned = False
             if self.cfg["ai_tidy"]:
@@ -172,21 +183,22 @@ class Engine:
     def _apply_idle_settings(self) -> None:
         """Push the idle timeout to the writing model server."""
         try:
-            mins = float(self.cfg.get("idle_minutes", 5) or 5)
-        except (TypeError, ValueError):
-            mins = 5
-        mins = min(max(mins, 1), 120)
-        try:
-            writer.set_idle_seconds(int(mins * 60))
+            writer.set_idle_seconds(int(self._idle_seconds()))
         except Exception:
             pass
 
     def _idle_seconds(self) -> float:
+        """Seconds without dictation before models unload. 0 (the default)
+        unloads the moment each take is delivered, so nothing sits in memory
+        between takes."""
         try:
-            mins = float(self.cfg.get("idle_minutes", 5) or 5)
+            s = float(self.cfg.get("idle_seconds", 0))
         except (TypeError, ValueError):
-            mins = 5
-        return min(max(mins, 1), 120) * 60
+            s = 0.0
+        return min(max(s, 0.0), 3600.0)
+
+    def _instant_unload(self) -> bool:
+        return bool(self.cfg.get("idle_unload", True)) and self._idle_seconds() <= 0
 
     def unload_model(self, reason: str = "idle") -> bool:
         """Drop the speech model so its VRAM/RAM goes back to the system.
@@ -239,6 +251,17 @@ class Engine:
                 if self._stop.is_set():
                     break
                 time.sleep(1)
+
+    def _release_after_take(self) -> None:
+        """With idle_seconds 0 (the default), drop everything the moment a take
+        is delivered, so no VRAM is held between takes. The idle watcher is
+        still the backstop for the other paths."""
+        if not self._instant_unload():
+            return
+        if not self._jobs.empty() or self.state in ("listening", "transcribing"):
+            return  # another take is queued or being recorded; keep working
+        if self.unload_model("take done") and self.cfg["ai_tidy"]:
+            writer.stop()   # the writing model goes back to zero with it
 
     def _wait_for_model(self, timeout: float = 120.0) -> bool:
         """Wait for a reloading model after an idle unload. True when ready."""
@@ -456,8 +479,10 @@ class Engine:
             # instead of waiting for the idle timeout.
             self.unload_model("paused")
         elif not self.paused and self.model is None and self.cfg.get("idle_unload", True) \
-                and self.ms.status == "idle":
-            # Resume preloads so the next take is fast again.
+                and self.ms.status == "idle" and not self._instant_unload():
+            # Resume preloads so the next take is fast again. With instant
+            # unload there's no point: it would load now and drop right
+            # after the take, so it loads on the hotkey press instead.
             self.ensure_model()
         self.emit("state", {"state": self.state})
         return self.paused
@@ -490,6 +515,7 @@ class Engine:
                         self._set_state("loading")
                     else:
                         self._set_state("error")
+                self._release_after_take()
 
     def _decode(self, data) -> str:
         cfg = self.cfg
@@ -596,6 +622,7 @@ class Engine:
             text = f"error: {e}"
         if take.on_text:
             take.on_text(text)
+        self._release_after_take()
 
 
 def _title(name: str) -> str:

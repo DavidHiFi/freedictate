@@ -203,6 +203,8 @@ class App(QObject):
         if self.settings_window is None:
             from .ui.settings import SettingsWindow
             self.settings_window = SettingsWindow(self)
+            self.settings_window.closed.connect(
+                lambda w=self.settings_window: self._settings_closed(w))
         w = self.settings_window
         if page:
             w.go(page)
@@ -238,6 +240,15 @@ class App(QObject):
                 native.set_visible_rect(new.hwnd(), bounds)
             bar = new.stack.currentWidget().verticalScrollBar()
             QTimer.singleShot(0, lambda: bar.setValue(scroll))
+
+    def _settings_closed(self, w) -> None:
+        """Forget a settings window the user closed, so its pages, history
+        cards and timers are freed instead of living hidden in RAM. The next
+        show_settings builds a fresh one."""
+        if self.settings_window is w:
+            w.dispose()
+            self.settings_window = None
+            w.deleteLater()
 
     def pick_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

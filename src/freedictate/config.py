@@ -65,8 +65,8 @@ DEFAULTS: dict[str, Any] = {
     "min_seconds": 0.4,
     "silence_peak": 0.004,
     "paste_delay_ms": 40,
-    "idle_unload": True,            # unload models after a while without dictation, freeing VRAM/RAM
-    "idle_minutes": 5,              # minutes without a take before unloading (1-120)
+    "idle_unload": True,            # unload models when not dictating, freeing VRAM/RAM
+    "idle_seconds": 0,              # idle seconds before unloading (0 unloads right after each take)
     # bookkeeping
     "first_run_done": False,
     "window_geometry": "",
@@ -90,7 +90,7 @@ RANGES: dict[str, tuple[float, float]] = {
     "sound_volume": (0, 100), "max_seconds": (10, 3600), "auto_stop_silence": (0, 30),
     "tint": (0, 100), "history_days": (0, 3650), "cpu_threads": (0, 64), "beam_size": (1, 10),
     "min_seconds": (0.1, 5), "silence_peak": (0.0, 0.2), "paste_delay_ms": (0, 1000),
-    "idle_minutes": (1, 120),
+    "idle_seconds": (0, 3600),
 }
 
 _OLD_BACKDROP = {"Acrylic": "acrylic", "Frosted glass": "acrylic", "Mica": "mica",
@@ -183,6 +183,13 @@ class Config:
                     raise ValueError("settings file is not a JSON object")
                 if _is_legacy(raw):
                     raw = migrate_legacy(raw)   # v1/v2 settings keep their meaning
+                if "idle_seconds" not in raw and "idle_minutes" in raw:
+                    # 3.3 kept minutes; 3.4 speaks seconds, where 0 unloads
+                    # right after each take. Keep what the user chose.
+                    try:
+                        raw["idle_seconds"] = int(float(raw["idle_minutes"]) * 60)
+                    except (TypeError, ValueError):
+                        pass
             except (OSError, ValueError) as e:
                 log.warning("Settings unreadable (%s); keeping a copy and using defaults.", e)
                 try:

@@ -68,13 +68,14 @@ IDLE_STOP_S = 5 * 60  # the model leaves graphics memory after this long without
 
 def set_idle_seconds(s: int) -> None:
     """How long the writing model stays loaded without a take. Called from the
-    engine when the idle setting changes; clamped to 1 minute – 2 hours."""
+    engine when the idle setting changes; 0 stops it right after each take,
+    the upper bound is 2 hours."""
     global IDLE_STOP_S
     try:
         s = int(s)
     except (TypeError, ValueError):
         return
-    IDLE_STOP_S = min(max(s, 60), 2 * 3600)
+    IDLE_STOP_S = min(max(s, 0), 2 * 3600)
     _server.idle_seconds = IDLE_STOP_S
 
 _PROMPT = (

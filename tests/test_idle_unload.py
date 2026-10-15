@@ -29,7 +29,7 @@ def make_engine(tmp_path, monkeypatch, **overrides):
                 "min_seconds": 0.4, "silence_peak": 0.004, "max_seconds": 600,
                 "auto_stop_silence": 0, "input_device": "", "sounds": False,
                 "sound_volume": 0, "ai_tidy": False, "ai_model": "light",
-                "idle_unload": True, "idle_minutes": 5}
+                "idle_unload": True, "idle_seconds": 0}
     cfg_data.update(overrides)
     cfg = CfgDict(cfg_data)
     hist = History(tmp_path / "h.db")
@@ -45,11 +45,15 @@ def make_engine(tmp_path, monkeypatch, **overrides):
 def test_idle_unload_defaults_and_coercion(tmp_path):
     c = Config(tmp_path / "s.json")
     assert c["idle_unload"] is True
-    assert c["idle_minutes"] == 5
-    c.update({"idle_minutes": 500})
-    assert c["idle_minutes"] == 120
-    c.update({"idle_minutes": 0})
-    assert c["idle_minutes"] == 1
+    assert c["idle_seconds"] == 0        # 0: unload right after each take
+    c.update({"idle_seconds": 5000})
+    assert c["idle_seconds"] == 3600
+    c.update({"idle_seconds": -3})
+    assert c["idle_seconds"] == 0
+    # A 3.3 settings file keeps its chosen timeout, translated to seconds.
+    (tmp_path / "old.json").write_text('{"idle_minutes": 10}', encoding="utf-8")
+    c2 = Config(tmp_path / "old.json")
+    assert c2["idle_seconds"] == 600
 
 
 def test_unload_frees_model_and_emits(tmp_path, monkeypatch):
@@ -121,7 +125,7 @@ def test_usable_when_unloaded_and_status_text_mentions_vram(tmp_path, monkeypatc
 
 
 def test_pause_unloads_and_resume_reloads(tmp_path, monkeypatch):
-    eng, hist = make_engine(tmp_path, monkeypatch)
+    eng, hist = make_engine(tmp_path, monkeypatch, idle_seconds=300)
     try:
         eng.model = object()
         eng.ms.active = "small.en"
@@ -134,7 +138,19 @@ def test_pause_unloads_and_resume_reloads(tmp_path, monkeypatch):
         monkeypatch.setattr(eng, "ensure_model", lambda force=False: calls.append(force))
         eng.toggle_pause()
         assert eng.paused is False
-        assert calls, "resuming should reload the model"
+        assert calls, "resuming should reload the model when it stays loaded between takes"
+
+        eng2, hist2 = make_engine(tmp_path, monkeypatch, idle_seconds=0)
+        try:
+            eng2.model = None
+            eng2.ms.status = "idle"
+            eng2.state = "ready"
+            calls2 = []
+            monkeypatch.setattr(eng2, "ensure_model", lambda force=False: calls2.append(force))
+            eng2.toggle_pause()
+            assert not calls2, "with instant unload, resuming must not preload a model that will drop again"
+        finally:
+            hist2.close()
     finally:
         hist.close()
 
@@ -152,7 +168,7 @@ def test_wait_for_model_returns_quickly_when_ready(tmp_path, monkeypatch):
 
 
 def test_writer_idle_timeout_follows_setting(tmp_path, monkeypatch):
-    eng, hist = make_engine(tmp_path, monkeypatch, idle_minutes=2)
+    eng, hist = make_engine(tmp_path, monkeypatch, idle_seconds=120)
     try:
         seen = []
         monkeypatch.setattr(writer, "set_idle_seconds", lambda s: seen.append(s))
@@ -166,3 +182,58 @@ def test_writer_idle_timeout_follows_setting(tmp_path, monkeypatch):
             writer.set_idle_seconds(5 * 60)
         except Exception:
             pass
+
+
+def test_release_after_take_drops_everything(tmp_path, monkeypatch):
+    """The 3.4 default: the moment a take is delivered, the speech model is
+    gone and the writing model is stopped, so nothing sits in VRAM."""
+    eng, hist = make_engine(tmp_path, monkeypatch, idle_seconds=0)
+    try:
+        eng.model = object()
+        eng.ms.active, eng.ms.status = "small.en", "idle"
+        eng.state = "ready"
+        freed = []
+        monkeypatch.setattr(models, "free_memory", lambda: freed.append(True))
+        stopped = []
+        monkeypatch.setattr(writer, "stop", lambda: stopped.append(True))
+        eng.cfg["ai_tidy"] = True
+        assert eng._release_after_take() is None
+        assert eng.model is None
+        assert freed == [True]
+        assert stopped == [True]
+        assert ("model", {"unloaded": True}) in eng.events
+    finally:
+        hist.close()
+
+
+def test_release_after_take_waits_for_queued_or_recording(tmp_path, monkeypatch):
+    eng, hist = make_engine(tmp_path, monkeypatch, idle_seconds=0)
+    try:
+        eng.model = object()
+        eng.ms.active, eng.ms.status = "small.en", "idle"
+        eng.state = "ready"
+        eng._jobs.put(object())
+        assert eng.model is not None
+        assert eng._release_after_take() is None
+        assert eng.model is not None, "a queued take still needs the model"
+        eng._jobs.get()
+        eng.state = "listening"
+        eng._release_after_take()
+        assert eng.model is not None, "never unload under a take being recorded"
+        eng.state = "ready"
+        eng._release_after_take()
+        assert eng.model is None
+    finally:
+        hist.close()
+
+
+def test_release_after_take_kept_when_timeout_positive(tmp_path, monkeypatch):
+    eng, hist = make_engine(tmp_path, monkeypatch, idle_seconds=300)
+    try:
+        eng.model = object()
+        eng.ms.active, eng.ms.status = "small.en", "idle"
+        eng.state = "ready"
+        eng._release_after_take()
+        assert eng.model is not None, "a positive timeout hands the decision to the idle watcher"
+    finally:
+        hist.close()

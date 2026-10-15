@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QSize, Qt, QTimer, Slot
+from PySide6.QtCore import QByteArray, QEvent, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCompleter, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QMessageBox, QProgressBar, QPushButton, QScrollArea,
@@ -80,6 +80,8 @@ class Page(QScrollArea):
 
 
 class SettingsWindow(FluentWindow):
+    closed = Signal()               # the app forgets the window when this fires
+
     def __init__(self, app):
         super().__init__(APP_NAME, native_titlebar=app.cfg["titlebar"] == "windows")
         self.app, self.cfg, self.engine, self.history = app, app.cfg, app.engine, app.history
@@ -242,6 +244,10 @@ class SettingsWindow(FluentWindow):
             self.cfg["first_run_done"] = True
             self.app.notify("FreeDictate keeps running in the tray",
                             f"Hold {hotkeys.label(self.cfg['hotkey'])} anywhere to dictate.")
+        # A closed window used to be kept hidden with every page and history
+        # card in memory. The app hears this and tears it down instead; the
+        # next open builds it fresh.
+        self.closed.emit()
         e.accept()
 
     # ------------------------------------------------------------ status
@@ -548,18 +554,19 @@ class SettingsWindow(FluentWindow):
         card = page.section("Memory", "FreeDictate holds graphics memory while its models are loaded. "
                             "Unloading gives it back to games and other apps when you're not dictating.")
         idle = Toggle(self.cfg.get("idle_unload", True))
-        after = Combo([("1", "After 1 minute"), ("2", "After 2 minutes"), ("3", "After 3 minutes"),
-                       ("5", "After 5 minutes"), ("10", "After 10 minutes"), ("15", "After 15 minutes"),
-                       ("30", "After 30 minutes"), ("60", "After 1 hour")],
-                      str(self.cfg.get("idle_minutes", 5)), width=200)
+        after = Combo([("0", "Right after each take"), ("30", "30 seconds"), ("60", "1 minute"),
+                       ("120", "2 minutes"), ("300", "5 minutes"), ("600", "10 minutes"),
+                       ("1800", "30 minutes"), ("3600", "1 hour")],
+                      str(int(self.cfg.get("idle_seconds", 0))), width=200)
         after.setEnabled(idle.isChecked())
         idle.toggled.connect(lambda on: (self.cfg.update({"idle_unload": on}), after.setEnabled(on)))
-        after.currentIndexChanged.connect(lambda _: self.cfg.update({"idle_minutes": int(after.value())}))
+        after.currentIndexChanged.connect(lambda _: self.cfg.update({"idle_seconds": int(after.value())}))
         card.add(Row("Free graphics memory when idle",
-                     "Unloads the speech model (and the writing model) after a while without dictation. "
-                     "The next take reloads it automatically, a few seconds slower. Pausing unloads immediately.",
+                     "Unloads the models so games get the memory back. Right after each take is the "
+                     "default: nothing sits in VRAM between takes, and the next take reloads while "
+                     "you're already talking. Pausing unloads immediately.",
                      idle))
-        self._idle_after_row = Row("Unload after", "", after)
+        self._idle_after_row = Row("Keep models loaded for", "", after)
         card.add(self._idle_after_row)
 
         card = page.section("Fine tuning", "Defaults suit most people.")

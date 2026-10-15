@@ -306,7 +306,9 @@ def free_memory() -> None:
 
     Deleting the Whisper object drops the reference, but CUDA blocks can
     linger until the garbage collector runs and the allocator cache is
-    flushed. Best effort: never raises."""
+    flushed. Best effort: never raises. The working-set trim on top hands the
+    pages the process is no longer using straight back to Windows, instead of
+    waiting for the memory manager to age them out."""
     import gc
     gc.collect()
     try:
@@ -315,6 +317,14 @@ def free_memory() -> None:
             torch.cuda.empty_cache()
     except Exception:
         pass
+    if os.name == "nt":
+        try:
+            psapi = ctypes.WinDLL("psapi")
+            psapi.EmptyWorkingSet.argtypes = [ctypes.c_void_p]
+            psapi.EmptyWorkingSet.restype = ctypes.c_int
+            psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+        except Exception:
+            pass
 
 
 class _Segment:
