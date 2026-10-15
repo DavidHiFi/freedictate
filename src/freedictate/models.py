@@ -92,12 +92,25 @@ def cache_dir() -> str | None:
 
 def local_path(name: str) -> Path | None:
     """Folder of a fully downloaded model, or None."""
+    eng = engine_of(name)
     try:
         from huggingface_hub import snapshot_download
-        eng = engine_of(name)
         p = Path(snapshot_download(repo_id(name), allow_patterns=_FILES[eng], local_files_only=True,
                                    cache_dir=cache_dir()))
-        return p if (p / _MAIN_FILE[eng]).exists() else None
+        if (p / _MAIN_FILE[eng]).exists():
+            return p
+    except Exception:
+        pass
+    # Downloads are pinned to a commit SHA, and huggingface_hub writes no
+    # refs/main for those, so snapshot_download can't resolve the revision on
+    # a cache this app filled by itself (3.4.0: "isn't downloaded" after a
+    # completed download). Read the snapshot folders directly instead.
+    try:
+        snaps = _repo_cache(repo_id(name)) / "snapshots"
+        if not snaps.is_dir():
+            return None
+        done = [s for s in snaps.iterdir() if (s / _MAIN_FILE[eng]).is_file()]
+        return max(done, key=lambda s: s.stat().st_mtime) if done else None
     except Exception:
         return None
 

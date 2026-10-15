@@ -104,6 +104,25 @@ def test_parakeet_is_wired_to_its_own_repo_and_files():
     assert models.BY_NAME["large-v3"].prompts
 
 
+def test_local_path_finds_a_sha_pinned_download(tmp_path, monkeypatch):
+    """A download pinned to a commit SHA writes no refs/main entry, so
+    snapshot_download can't resolve it on a cache this app filled itself.
+    3.4.0 regression: fresh installs said "isn't downloaded" right after a
+    completed download (Parakeet), and Whisper models re-downloaded."""
+    monkeypatch.setattr(models, "cache_dir", lambda: str(tmp_path))
+    snap = tmp_path / "models--istupakov--parakeet-tdt-0.6b-v2-onnx" / "snapshots" / ("0" * 40)
+    snap.mkdir(parents=True)
+    for f in ("config.json", "vocab.txt", "nemo128.onnx", "encoder-model.int8.onnx",
+              "decoder_joint-model.int8.onnx"):
+        (snap / f).write_text("x", encoding="utf-8")
+    assert models.local_path("parakeet-tdt-0.6b-v2") == snap
+    assert models.is_downloaded("parakeet-tdt-0.6b-v2") is True
+    # An incomplete download (no main file yet) is still not downloaded.
+    (snap / "encoder-model.int8.onnx").unlink()
+    assert models.local_path("parakeet-tdt-0.6b-v2") is None
+    assert models.is_downloaded("parakeet-tdt-0.6b-v2") is False
+
+
 def test_parakeet_splits_long_takes_into_chunks():
     m = models.ParakeetModel.__new__(models.ParakeetModel)
     seen = []
