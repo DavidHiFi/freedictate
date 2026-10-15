@@ -260,7 +260,9 @@ class SettingsWindow(FluentWindow):
         title = "Paused" if e.paused else titles.get(state, state)
         if not e.paused and state == "ready" and getattr(e, "model", None) is None \
                 and getattr(getattr(e, "ms", None), "active", "") == "":
-            title = "Unloaded to save VRAM"
+            # Short: this sits in the fixed-width sidebar, and "Unloaded to
+            # save VRAM" clipped there. The wrapped line below spells it out.
+            title = "Unloaded"
         self.status_title.setText(title)
         self.status_dot.set_color(pal.sub if e.paused else getattr(pal, STATE_COLOR.get(state, "sub")))
         ms = e.ms

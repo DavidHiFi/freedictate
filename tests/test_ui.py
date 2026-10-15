@@ -126,6 +126,26 @@ def test_every_slider_fits_its_handle(qapp, env):
         win.close()
 
 
+def test_unloaded_status_title_fits_the_sidebar(qapp, env):
+    """The unloaded title sits in the 232 px sidebar; "Unloaded to save VRAM"
+    clipped its last word there. Keep it short — the wrapped line under it
+    already spells out what happened."""
+    app = make_app(fresh_cfg(), env.hist)
+    app.engine.model = None
+    app.engine.ms = SimpleNamespace(active="", device="cpu", compute="int8",
+                                    status="idle", error="", wanted="", progress=(0, 1))
+    win = SettingsWindow(app)
+    win.show()
+    pump(qapp, 6)
+    try:
+        assert win.status_title.text() == "Unloaded"
+        fm = win.status_title.fontMetrics()
+        assert fm.horizontalAdvance(win.status_title.text()) <= win.status_title.width()
+    finally:
+        win.dispose()
+        win.close()
+
+
 def test_tint_stays_usable_with_windows_titlebar(qapp, env):
     cfg = fresh_cfg(titlebar="windows")
     win = open_window(qapp, cfg, env)

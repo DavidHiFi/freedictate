@@ -42,7 +42,8 @@ CATALOG: list[ModelInfo] = [
     ModelInfo("distil-large-v3.5", "Distil Large v3.5", 1515, True,
               "About as accurate as Large v3 for English, and faster."),
     ModelInfo("parakeet-tdt-0.6b-v2", "Parakeet v2", 661, True,
-              "NVIDIA's English model. More accurate than Large v3, and fast without a graphics card. "
+              "NVIDIA's English model. More accurate than Large v3, and fast without a graphics card: "
+              "it runs on the processor by design, so the graphics-card setting is for Whisper models. "
               "Ignores Words it should know.", engine="parakeet", repo="istupakov/parakeet-tdt-0.6b-v2-onnx"),
     ModelInfo("large-v3-turbo", "Large v3 Turbo", 1620, False, "Close to Large v3, much faster. Best with an NVIDIA GPU."),
     ModelInfo("tiny", "Tiny (multilingual)", 75, False, "Any language. Fastest."),
