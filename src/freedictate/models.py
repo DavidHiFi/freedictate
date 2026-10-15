@@ -215,6 +215,15 @@ def gpu_libs_present() -> bool:
     return all((paths.CUDA_DIR / d).exists() for d in CUBLAS_DLLS)
 
 
+def _cudart_present() -> bool:
+    return all((paths.CUDA_DIR / d).exists() for d in CUDART_DLLS)
+
+
+def _cudnn_present() -> bool:
+    cudnn = [p.name for p in paths.CUDA_DIR.glob("cudnn*.dll")]
+    return "cudnn64_9.dll" in cudnn and len(cudnn) >= 4
+
+
 def enable_gpu_libs() -> None:
     global _gpu_dll_handle
     if gpu_libs_present() and _gpu_dll_handle is None:
@@ -259,15 +268,31 @@ def gpu_download_size() -> int:
     return 553_162_896
 
 
-def download_gpu_libs(progress: ProgressFn | None = None, cancel: threading.Event | None = None) -> None:
-    meta_url = f"https://pypi.org/pypi/{CUBLAS_PKG}/{CUBLAS_VERSION}/json"
-    with urllib.request.urlopen(meta_url, timeout=30) as r:
+def _win_wheel(pkg: str, version: str) -> dict:
+    with urllib.request.urlopen(f"https://pypi.org/pypi/{pkg}/{version}/json", timeout=30) as r:
         meta = json.load(r)
     files = [u for u in meta["urls"] if u["filename"].endswith("win_amd64.whl")]
     if not files:
-        raise RuntimeError("No Windows build of cuBLAS found on PyPI")
-    f = files[0]
-    total, want_sha = f["size"], f["digests"]["sha256"]
+        raise RuntimeError(f"No Windows build of {pkg} found on PyPI")
+    return files[0]
+
+
+def _extract_dlls(z: zipfile.ZipFile, wanted) -> int:
+    """Copy the wheel's matching DLLs into CUDA_DIR; returns how many."""
+    n = 0
+    for info in z.infolist():
+        base = info.filename.rsplit("/", 1)[-1]
+        if base in wanted:
+            with z.open(info) as src, open(paths.CUDA_DIR / base, "wb") as dst:
+                while chunk := src.read(1 << 20):
+                    dst.write(chunk)
+            n += 1
+    return n
+
+
+def download_gpu_libs(progress: ProgressFn | None = None, cancel: threading.Event | None = None) -> None:
+    f = _win_wheel(CUBLAS_PKG, CUBLAS_VERSION)
+    total = f["size"]
     paths.CUDA_DIR.mkdir(parents=True, exist_ok=True)
     tmp = paths.CUDA_DIR / (f["filename"] + ".part")
     sha = hashlib.sha256()
@@ -286,15 +311,11 @@ def download_gpu_libs(progress: ProgressFn | None = None, cancel: threading.Even
                 done += len(chunk)
                 if progress:
                     progress(done, total)
-        if sha.hexdigest() != want_sha:
+        if sha.hexdigest() != f["digests"]["sha256"]:
             raise RuntimeError("Downloaded file failed its checksum. Try again.")
         with zipfile.ZipFile(tmp) as z:
-            for info in z.infolist():
-                base = info.filename.rsplit("/", 1)[-1]
-                if base in CUBLAS_DLLS:
-                    with z.open(info) as src, open(paths.CUDA_DIR / base, "wb") as dst:
-                        while chunk := src.read(1 << 20):
-                            dst.write(chunk)
+            if not _extract_dlls(z, CUBLAS_DLLS):
+                raise RuntimeError("The download was missing its libraries. Try again.")
     finally:
         tmp.unlink(missing_ok=True)
     if not gpu_libs_present():
@@ -349,7 +370,10 @@ class _Segment:
 class ParakeetModel:
     """onnx-asr Parakeet behind faster-whisper's transcribe() shape, so the
     engine decodes every model the same way. Runs on the processor: int8 on
-    16 threads decodes a 10 s take in about half a second (measured)."""
+    16 threads decodes a 10 s take in about half a second (measured). The
+    int8 graph can't run on onnxruntime's CUDA provider (measured 3.5.0
+    research: slower than CPU and still saturating every core), so there is
+    no GPU path here by design."""
 
     CHUNK_S = 25   # longer stretches lose words (measured: 8% dropped on a 4 min take)
 

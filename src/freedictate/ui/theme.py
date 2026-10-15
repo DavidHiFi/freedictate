@@ -150,6 +150,7 @@ QLabel[role="rowtitle"] {{ font-size: 10.5pt; }}
 QLabel[role="sub"] {{ color: {p.sub}; font-size: 9.5pt; }}
 QLabel[role="warn"] {{ color: {p.warn}; font-size: 9.5pt; }}
 QLabel[role="danger"] {{ color: {p.danger}; font-size: 9.5pt; }}
+QLabel[role="ok"] {{ color: {p.ok}; font-size: 9.5pt; }}
 QLabel[role="value"] {{ color: {p.sub}; }}
 QLabel a {{ color: {p.accent}; }}
 QLabel:disabled, QLabel[role="rowtitle"]:disabled, QLabel[role="sub"]:disabled, QLabel[role="value"]:disabled {{

@@ -59,7 +59,7 @@ DEFAULTS: dict[str, Any] = {
     # engine tuning
     "device": "auto",               # auto | cpu | cuda
     "compute_type": "auto",         # auto | int8 | int8_float16 | float16 | float32
-    "cpu_threads": 0,
+    "cpu_threads": 6,               # 0 = every core; 6 keeps the rest of the machine free
     "beam_size": 5,
     "vad": True,
     "min_seconds": 0.4,
@@ -202,6 +202,12 @@ class Config:
             for k, v in raw.items():
                 if k in DEFAULTS:
                     self._data[k] = _coerce(k, v)
+            # 3.5.0 made a 6-core cap the default. Anyone who never chose the
+            # old "0 = every core" setting gets the cap once; turning the new
+            # switch off afterwards is remembered for good.
+            if raw and self._data["cpu_threads"] == 0 and "cpu_threads_350_migrated" not in raw:
+                self._data["cpu_threads"] = 6
+                self._data["cpu_threads_350_migrated"] = True
 
     def save(self) -> None:
         with self._lock:

@@ -113,7 +113,7 @@ def test_every_slider_fits_its_handle(qapp, env):
     win = open_window(qapp, fresh_cfg(), env)
     try:
         sliders = win.findChildren(QSlider)
-        assert len(sliders) == 3  # sound volume, beam size, tint
+        assert len(sliders) == 4  # sound volume, processor cores, beam size, tint
         for sl in sliders:
             opt = QStyleOptionSlider()
             sl.initStyleOption(opt)
@@ -334,7 +334,12 @@ def test_speech_models_are_one_dropdown(qapp, env, monkeypatch):
         assert win.model_combo.count() == len(models.CATALOG)
         assert win.model_combo.value() == "large-v3" and "in use" in win.model_combo.currentText()
         assert win.model_btn.isHidden()                           # the model in use needs no button
-        assert win.spare_combo.count() == 1 and not win.spare_row.isHidden()   # tiny.en can be deleted
+        lib = win._lib_rows                                        # the library lists every model
+        assert "In use" in lib["large-v3"].note.text()
+        assert not lib["large-v3"].controls.itemAt(0).widget().isVisible()
+        assert lib["tiny.en"].note.text() == "Downloaded"
+        assert lib["tiny.en"].controls.itemAt(0).widget().text() == "Remove"
+        assert "Not downloaded" in lib["parakeet-tdt-0.6b-v2"].note.text()
         win.model_combo.setCurrentIndex(win.model_combo.findData("parakeet-tdt-0.6b-v2"))
         pump(qapp)
         assert win.model_btn.text() == "Download" and not win.model_btn.isHidden()

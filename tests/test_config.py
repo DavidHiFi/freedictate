@@ -59,6 +59,17 @@ def test_legacy_settings_file_migrates_on_load(tmp_path):
     assert c["paste_delay_ms"] == 300
 
 
+def test_existing_zero_thread_setting_gets_the_3_5_0_cap_once(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"cpu_threads": 0}))
+    c = Config(p)
+    assert c["cpu_threads"] == 6   # the cap applies once, even for an existing 0
+    c.update({"cpu_threads": 0})   # turning it off afterwards is remembered
+    assert Config(p)["cpu_threads"] == 0
+    p.write_text(json.dumps({"cpu_threads": 9}))   # an explicit value is kept as-is
+    assert Config(p)["cpu_threads"] == 9
+
+
 def test_export_import_roundtrip(tmp_path):
     a = Config(tmp_path / "a.json")
     a.update({"theme": "Dracula", "hotkey": "rctrl"})

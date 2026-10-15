@@ -14,7 +14,7 @@ from PySide6.QtCore import QByteArray, QEvent, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCompleter, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QMessageBox, QProgressBar, QPushButton, QScrollArea,
-                               QSizePolicy, QSpinBox, QStackedWidget, QVBoxLayout, QWidget)
+                               QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import APP_NAME, REPO_URL, __version__, audio, hotkeys, models, paths, system, writer
 from ..log import log
@@ -524,14 +524,18 @@ class SettingsWindow(FluentWindow):
         self.model_row = Row("Speech model", "", self.model_combo)
         self.model_row.controls.addWidget(self.model_btn)
         card.add(self.model_row)
-        self.spare_combo = Combo([], "", width=300)
-        self.spare_combo.setSizeAdjustPolicy(Combo.SizeAdjustPolicy.AdjustToContents)
-        self.spare_del = button("Delete", "", icon="trash")
-        self.spare_del.clicked.connect(self._delete_spare)
-        self.spare_row = Row("Other downloaded models", "Delete one to free up disk space.", self.spare_combo)
-        self.spare_row.controls.addWidget(self.spare_del)
-        card.add(self.spare_row)
         self._downloaded_cache: set[str] = set()
+        card = page.section("Model library",
+                            "Everything FreeDictate can run. Download what you need, remove what you "
+                            "don't. Same files, same accuracy — only the chip doing the work changes.")
+        self._lib_rows: dict[str, Row] = {}
+        for info in models.CATALOG:
+            btn = button("")
+            btn.clicked.connect(lambda _=False, n=info.name: self._library_clicked(n))
+            row = Row(info.title, "", btn)
+            card.add(row)
+            self._lib_rows[info.name] = row
+        self._refresh_library()
 
         card = page.section("Graphics card", "An NVIDIA graphics card makes the large models many times faster.")
         gpu = models.gpu_name()
@@ -579,13 +583,21 @@ class SettingsWindow(FluentWindow):
         beam = Slider(1, 10, self.cfg["beam_size"], "", width=160)
         beam.changed.connect(lambda v: self.cfg.update({"beam_size": v}))
         card.add(Row("Search width", "Higher is slightly more accurate and slower. 5 is standard.", beam))
-        threads = QSpinBox()
-        threads.setRange(0, os.cpu_count() or 64)
-        threads.setValue(self.cfg["cpu_threads"])
-        threads.setSpecialValueText("Automatic")
-        threads.setFixedWidth(130)
-        threads.valueChanged.connect(lambda v: self.cfg.update({"cpu_threads": v}))
-        card.add(Row("Processor threads", "How many CPU cores the model may use.", threads))
+        cores = os.cpu_count() or 8
+        limit = Toggle(self.cfg["cpu_threads"] > 0)
+        cap = Slider(1, cores, self.cfg["cpu_threads"] or min(6, cores), " cores", width=180)
+        cap.changed.connect(lambda v: self.cfg.update({"cpu_threads": v}))
+        cap_row = Row("Processor cores", f"This PC reports {cores} threads. "
+                      "Dictation waits longer for your words the lower this is.", cap)
+        limit.toggled.connect(lambda on: (
+            self.cfg.update({"cpu_threads": (self.cfg["cpu_threads"] or min(6, cores)) if on else 0}),
+            Card.show_row(cap_row, on)))
+        card.add(Row("Limit processor cores",
+                     "Caps how many processor cores dictation may use. The lower you set it, the longer "
+                     "a take takes — but the fewer CPU spikes and audio crackles. Six cores measured "
+                     "just as fast as every core, with the rest of the machine left alone.", limit))
+        card.add(cap_row)
+        Card.show_row(cap_row, self.cfg["cpu_threads"] > 0)
         vad = Toggle(self.cfg["vad"])
         vad.toggled.connect(lambda on: self.cfg.update({"vad": on}))
         card.add(Row("Skip silent parts", "Cuts pauses before transcribing. Faster, and stops made-up words in silence.", vad))
@@ -633,11 +645,7 @@ class SettingsWindow(FluentWindow):
         btn.style().polish(btn)
         self.model_row.set_note(note, "value")
 
-        spare = [m for m in models.CATALOG
-                 if m.name in have and m.name not in (ms.active, self.cfg["model"], ms.wanted)]
-        self.spare_combo.set_items([(m.name, f"{m.title} ({_mb(m.size_mb * 1_000_000)})")
-                                    for m in spare], self.spare_combo.value() or "")
-        Card.show_row(self.spare_row, bool(spare))
+        self._refresh_library()
         self._update_lang_note()
 
     def _model_btn_clicked(self) -> None:
@@ -655,18 +663,57 @@ class SettingsWindow(FluentWindow):
         self._refresh_models()
         self.refresh_status()
 
-    def _delete_spare(self) -> None:
-        name = self.spare_combo.value()
-        info = models.BY_NAME.get(name)
-        if not info:
-            return
-        if QMessageBox.question(self, "Delete model", f"Delete {info.title} from this PC? "
-                                f"You can download it again later.") != QMessageBox.StandardButton.Yes:
-            return
-        if not models.delete(name):
-            QMessageBox.information(self, "Delete model", f"{info.title} couldn't be deleted. "
-                                    "It may be in use; restart FreeDictate and try again.")
+    def _refresh_library(self) -> None:
+        """Status and action for every model in the catalog: coloured state
+        text on the left, the one valid action on the right."""
+        ms, have = self.engine.ms, self._downloaded_cache
+        for name, row in self._lib_rows.items():
+            info = models.BY_NAME[name]
+            btn = row.controls.itemAt(0).widget()
+            note, role = "", ""
+            if name == ms.wanted and ms.status == "downloading":
+                done, total = ms.progress
+                note, role = f"Downloading {done * 100 // total if total else 0}%…", "warn"
+                btn.setText("Cancel")
+                btn.setProperty("kind", "")
+            elif name == ms.active and self.engine.model is not None:
+                note = f"In use · on the {'graphics card' if ms.device == 'cuda' else 'processor'}"
+                role = "ok"
+                btn.setVisible(False)
+            elif name in have:
+                note, role = "Downloaded", "ok"
+                btn.setText("Remove")
+                btn.setProperty("kind", "")
+                btn.setVisible(True)
+            else:
+                note, role = f"Not downloaded · {_mb(info.size_mb * 1_000_000)}", "danger"
+                btn.setText("Download")
+                btn.setProperty("kind", "primary")
+                btn.setVisible(True)
+            row.set_note(note, role)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            refresh_icons(row)
+
+    def _library_clicked(self, name: str) -> None:
+        ms = self.engine.ms
+        if name == ms.wanted and ms.status == "downloading":
+            self.engine.cancel_download()
+            if ms.active:
+                self.cfg["model"] = ms.active
+        elif name in self._downloaded_cache:
+            info = models.BY_NAME.get(name)
+            if info and QMessageBox.question(self, "Remove model", f"Remove {info.title} from this PC? "
+                                             "You can download it again later.") != QMessageBox.StandardButton.Yes:
+                return
+            if not models.delete(name):
+                QMessageBox.information(self, "Remove model", f"{info.title} couldn't be removed. "
+                                        "It may be in use; restart FreeDictate and try again.")
+        else:
+            self.cfg.update({"model": name})   # choosing a model downloads it automatically
         self._refresh_models()
+        self._refresh_library()
+        self.refresh_status()
 
 
     def _refresh_gpu(self) -> None:

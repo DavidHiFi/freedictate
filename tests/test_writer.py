@@ -164,4 +164,4 @@ def test_both_engines_load_through_models_load(monkeypatch, tmp_path):
     monkeypatch.setattr(models, "ParakeetModel", FakeParakeet)
     monkeypatch.setattr(FakeParakeet, "transcribe", lambda self, a, **k: (iter([]), None))
     m, dev, ct = models.load("parakeet-tdt-0.6b-v2", "cuda", "auto")
-    assert calls[-1] == "parakeet" and (dev, ct) == ("cpu", "int8")
+    assert calls[-1] == "parakeet" and (dev, ct) == ("cpu", "int8")   # Parakeet is CPU by design
