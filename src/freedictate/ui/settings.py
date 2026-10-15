@@ -1267,6 +1267,13 @@ class SettingsWindow(FluentWindow):
                         "Lets it paste into apps that run as administrator. Windows blocks that otherwise. "
                         "Asks for permission once.", self.admin)
         self.admin_row = admin_row
+        # One persistent button, shown only while a restart is pending. A fresh
+        # insert per apply_startup() call stacked copies when both toggles
+        # changed in one pass, and left one behind when the toggle went off.
+        self.restart_btn = button("Restart now")
+        self.restart_btn.clicked.connect(lambda: self.app.restart(elevated=True))
+        self.restart_btn.hide()
+        admin_row.controls.insertWidget(0, self.restart_btn)
 
         def apply_startup() -> None:
             err = self.app.set_autostart(self.auto.isChecked(), self.admin.isChecked())
@@ -1275,13 +1282,11 @@ class SettingsWindow(FluentWindow):
                 t.blockSignals(True)
                 t.setChecked(v)
                 t.blockSignals(False)
+            self.restart_btn.setVisible(not err and now_elevated and not system.is_admin())
             if err:
                 admin_row.set_note(err, "danger")
             elif now_elevated and not system.is_admin():
                 admin_row.set_note("Takes effect when FreeDictate restarts.")
-                restart = button("Restart now")
-                restart.clicked.connect(lambda: self.app.restart(elevated=True))
-                admin_row.controls.insertWidget(0, restart)
             else:
                 admin_row.set_note("")
         self.auto.toggled.connect(lambda _: apply_startup())

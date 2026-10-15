@@ -108,8 +108,8 @@ def open_window(qapp, cfg, env):
 
 
 def test_every_slider_fits_its_handle(qapp, env):
-    """The 12px handle plus its 4px ring is 20px tall; a shorter slider clips
-    the ring at the top and bottom."""
+    """The 12px handle plus its 4px ring is 20px tall, 22px while hovered or
+    dragged; a shorter slider clips the ring at the top and bottom."""
     win = open_window(qapp, fresh_cfg(), env)
     try:
         sliders = win.findChildren(QSlider)
@@ -391,6 +391,43 @@ def test_slider_values_can_be_typed(qapp, env):
     sl.s.setValue(40)                                 # dragging updates the box
     assert box.text() == "40%"
     sl.close()
+
+
+def test_restart_now_is_a_single_button(qapp, env, monkeypatch):
+    """Enabling Run as administrator while Start with Windows was off ran
+    apply_startup twice (the chained auto toggle plus the explicit call) and
+    stacked two Restart now buttons. The button is persistent now: exactly one
+    exists, shown only while a restart is pending, hidden again after."""
+    monkeypatch.setattr(settings_mod.system, "is_admin", lambda: False)
+    app = make_app(fresh_cfg(), env.hist)
+    state = {"enabled": False, "elevated": False}
+    app.autostart_state = lambda: (state["enabled"], state["elevated"])
+
+    def set_autostart(enabled, elev):
+        state["enabled"], state["elevated"] = enabled, elev
+        return ""
+
+    app.set_autostart = set_autostart
+    win = SettingsWindow(app)
+    win.show()
+    pump(qapp, 6)
+    try:
+        assert win.restart_btn.isHidden()
+        win.admin.setChecked(True)            # auto was off: the chained signal
+        pump(qapp)                            # and the explicit call both ran
+        texts = [win.admin_row.controls.itemAt(i).widget().text()
+                 for i in range(win.admin_row.controls.count())
+                 if win.admin_row.controls.itemAt(i).widget() is not None]
+        assert texts.count("Restart now") == 1, texts
+        assert not win.restart_btn.isHidden()
+        win.admin.setChecked(False)
+        pump(qapp)
+        assert win.restart_btn.isHidden()
+    finally:
+        win.dispose()
+        win.close()
+        win.deleteLater()
+        pump(qapp)
 
 
 def test_blur_is_a_material_choice(qapp, env):

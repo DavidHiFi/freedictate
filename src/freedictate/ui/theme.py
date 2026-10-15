@@ -204,14 +204,18 @@ QComboBoxPrivateContainer {{ background: transparent; border: none; }}
 QComboBox QAbstractItemView::item {{ min-height: 30px; padding: 0 8px; border-radius: 4px; }}
 QComboBox QAbstractItemView::item:hover {{ background: {rgba(p.hover, 0.7)}; }}
 
-/* The handle is 12px + a 4px ring = 20px tall; without a matching widget
-   height Qt sizes the slider to 15px and clips the ring at top and bottom. */
-QSlider:horizontal {{ min-height: 20px; }}
+/* The handle is 12px + a 4px ring = 20px tall (22px while hovered or dragged);
+   without a matching widget height Qt sizes the slider to 15px and clips the
+   ring at top and bottom. */
+QSlider:horizontal {{ min-height: 22px; }}
 QSlider::groove:horizontal {{ height: 4px; background: {rgba(p.line, 1.0)}; border-radius: 2px; }}
 QSlider::sub-page:horizontal {{ background: {p.accent}; border-radius: 2px; }}
 QSlider::handle:horizontal {{ background: {p.accent}; border: 4px solid {mix(p.surface, p.bg, 0.3)}; width: 12px; height: 12px;
     margin: -8px 0; border-radius: 10px; }}
-QSlider::handle:horizontal:hover {{ border-width: 3px; }}
+/* Hover and drag stay a circle: the ring swells into a soft accent glow
+   instead of shrinking the border, which read as a squared block. */
+QSlider::handle:horizontal:hover, QSlider::handle:horizontal:pressed {{
+    margin: -9px 0; border: 5px solid {rgba(p.accent, 0.4)}; border-radius: 11px; }}
 
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {rgba(p.sub, 0.35)}; border-radius: 3px; min-height: 30px; margin: 0 2px; }}
