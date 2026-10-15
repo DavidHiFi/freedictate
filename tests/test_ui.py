@@ -23,6 +23,7 @@ from freedictate.history import History
 from freedictate.ui import native, theme
 from freedictate.ui import settings as settings_mod
 from freedictate.ui.settings import SettingsWindow
+from freedictate.ui.widgets import Slider
 from freedictate.ui.window import FluentWindow
 
 
@@ -121,6 +122,24 @@ def test_every_slider_fits_its_handle(qapp, env):
                                                QStyle.SubControl.SC_SliderHandle, sl)
             assert handle.height() <= sl.height(), (handle, sl.height())
             assert 0 <= handle.top() and handle.bottom() < sl.height()
+    finally:
+        win.dispose()
+        win.close()
+
+
+def test_every_slider_value_fits_its_value_box(qapp, env):
+    """The value box shows value + suffix, right-aligned in 64 px with a
+    6-character cap. "6 cores" is 7 characters, so the box truncated it to
+    "6 core" and the right-aligned text showed only the tail: "core". The
+    full text must fit."""
+    win = open_window(qapp, fresh_cfg(), env)
+    try:
+        sliders = win.findChildren(Slider)
+        assert len(sliders) == 4  # sound volume, processor cores, beam size, tint
+        for sl in sliders:
+            shown = f"{sl.s.value()}{sl.suffix}"
+            assert len(shown) <= sl.v.maxLength(), shown
+            assert sl.v.text() == shown, (sl.v.text(), shown)
     finally:
         win.dispose()
         win.close()

@@ -186,7 +186,7 @@ class App(QObject):
             if data.get("outcome") == "copied":
                 self.overlay.flash("Copied to clipboard")
             elif data.get("outcome") == "blocked":
-                self.overlay.flash("Admin window: on clipboard", 2.4)
+                self.overlay.flash("The text is on your clipboard", 2.4)
             self.bus.history_changed.emit()   # history.add ran on the transcriber thread
         if self.settings_window is not None:
             self.settings_window.engine_event(kind, data)

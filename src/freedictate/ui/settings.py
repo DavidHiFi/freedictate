@@ -527,7 +527,7 @@ class SettingsWindow(FluentWindow):
         self._downloaded_cache: set[str] = set()
         card = page.section("Model library",
                             "Everything FreeDictate can run. Download what you need, remove what you "
-                            "don't. Same files, same accuracy — only the chip doing the work changes.")
+                            "don't. Same files, same accuracy. Only the chip doing the work changes.")
         self._lib_rows: dict[str, Row] = {}
         for info in models.CATALOG:
             btn = button("")
@@ -575,7 +575,7 @@ class SettingsWindow(FluentWindow):
         self._idle_after_row = Row("Keep models loaded for", "", after)
         card.add(self._idle_after_row)
 
-        card = page.section("Fine tuning", "Defaults suit most people.")
+        card = page.section("Fine-tuning", "Defaults suit most people.")
         compute = Combo([("auto", "Automatic"), ("int8", "int8 (smallest, CPU)"), ("int8_float16", "int8 + float16 (GPU)"),
                          ("float16", "float16 (GPU)"), ("float32", "float32 (largest)")], self.cfg["compute_type"], width=220)
         compute.currentIndexChanged.connect(lambda _: self.cfg.update({"compute_type": compute.value()}))
@@ -585,7 +585,7 @@ class SettingsWindow(FluentWindow):
         card.add(Row("Search width", "Higher is slightly more accurate and slower. 5 is standard.", beam))
         cores = os.cpu_count() or 8
         limit = Toggle(self.cfg["cpu_threads"] > 0)
-        cap = Slider(1, cores, self.cfg["cpu_threads"] or min(6, cores), " cores", width=180)
+        cap = Slider(1, cores, self.cfg["cpu_threads"] or min(6, cores), "", width=180)
         cap.changed.connect(lambda v: self.cfg.update({"cpu_threads": v}))
         cap_row = Row("Processor cores", f"This PC reports {cores} threads. "
                       "Dictation waits longer for your words the lower this is.", cap)
@@ -594,7 +594,7 @@ class SettingsWindow(FluentWindow):
             Card.show_row(cap_row, on)))
         card.add(Row("Limit processor cores",
                      "Caps how many processor cores dictation may use. The lower you set it, the longer "
-                     "a take takes — but the fewer CPU spikes and audio crackles. Six cores measured "
+                     "a take takes, and the fewer CPU spikes and audio crackles. Six cores measured "
                      "just as fast as every core, with the rest of the machine left alone.", limit))
         card.add(cap_row)
         Card.show_row(cap_row, self.cfg["cpu_threads"] > 0)
@@ -1341,7 +1341,7 @@ class SettingsWindow(FluentWindow):
         reset = button("Reset", "danger")
         reset.clicked.connect(self._reset_settings)
         card.add(Row("Reset all settings", "History and downloaded models are kept.", reset))
-        old = button("Import from FreeDictate 2…", "", icon="file")
+        old = button("Import from FreeDictate 2", "", icon="file")
         old.clicked.connect(self._import_v2)
         card.add(Row("Coming from FreeDictate 2?",
                      "Point this at your old FreeDictate folder to bring over its settings and history.", old))
