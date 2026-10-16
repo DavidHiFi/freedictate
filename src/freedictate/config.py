@@ -32,6 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "end_punctuation": True,
     "voice_commands": True,
     "replacements": [],             # [{"find": str, "replace": str}]
+    "auto_submit": False,           # a take ending in "submit" is stripped and Enter is sent
     "ai_tidy": False,               # rewrite each take with a writing model (writer.py)
     "ai_model": "standard",         # light | standard (writer.CATALOG)
     # overlay

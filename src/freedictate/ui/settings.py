@@ -536,6 +536,16 @@ class SettingsWindow(FluentWindow):
             card.add(row)
             self._lib_rows[info.name] = row
         self._refresh_library()
+        self._verify_job: dict = {}
+        self._verify_timer = QTimer(self)
+        self._verify_timer.setInterval(200)
+        self._verify_timer.timeout.connect(self._verify_tick)
+        verify_btn = button("Verify model files")
+        verify_btn.clicked.connect(self._verify_clicked)
+        self.verify_row = Row("Model files",
+                              "Downloads are recorded with sizes and checksums and checked when this "
+                              "page opens. This re-checks every byte of every file.", verify_btn)
+        card.add(self.verify_row)
 
         card = page.section("Graphics card", "An NVIDIA graphics card makes the large models many times faster.")
         gpu = models.gpu_name()
@@ -691,6 +701,12 @@ class SettingsWindow(FluentWindow):
                 btn.setProperty("kind", "primary")
                 btn.setVisible(True)
             row.set_note(note, role)
+            # Cheap integrity check: file sizes against the recorded manifest.
+            if name in have and not (name == ms.wanted and ms.status == "downloading"):
+                state, detail = models.manifest_state(name)
+                if state == "broken":
+                    note, role = f"Files changed since download ({detail}) — remove and download again", "danger"
+                    row.set_note(note, role)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
             refresh_icons(row)
@@ -714,6 +730,55 @@ class SettingsWindow(FluentWindow):
         self._refresh_models()
         self._refresh_library()
         self.refresh_status()
+
+    def _verify_clicked(self) -> None:
+        """Full sha256 check of every downloaded model, off the UI thread.
+        Models downloaded before manifests were kept get one recorded now."""
+        if self._verify_job.get("busy"):
+            return
+        have = sorted(self._downloaded_cache)
+        if not have:
+            QMessageBox.information(self, "Verify model files", "No models are downloaded yet.")
+            return
+        self._verify_job["busy"] = True
+        self.verify_row.set_note("Checking…", "value")
+
+        def work():
+            results = []
+            for name in have:
+                title = models.BY_NAME[name].title
+                state, detail = models.manifest_state(name, full=True)
+                if state == "none":
+                    models.write_manifest(name)
+                    results.append((title, "checksum recorded", True))
+                elif state == "broken":
+                    results.append((title, detail, False))
+                else:
+                    results.append((title, "verified", True))
+            self._verify_job["results"] = results
+            self._verify_job["busy"] = False
+        threading.Thread(target=work, daemon=True, name="model-verify").start()
+        self._verify_timer.start()
+
+    def _verify_tick(self) -> None:
+        if self._verify_job.get("busy"):
+            return
+        self._verify_timer.stop()
+        results = self._verify_job.pop("results", None)
+        if results is None:
+            return
+        bad = [(t, d) for t, d, ok in results if not ok]
+        good = len(results) - len(bad)
+        plural = "" if good == 1 else "s"
+        if bad:
+            self.verify_row.set_note("Problems found — see the message.", "danger")
+            QMessageBox.warning(self, "Verify model files",
+                                "These files no longer match their recorded checksums. Remove and "
+                                "re-download them:\n\n" + "\n".join(f"{t}: {d}" for t, d in bad))
+        else:
+            self.verify_row.set_note(f"All {good} model{plural} checked.", "ok")
+            QMessageBox.information(self, "Verify model files",
+                                    f"All {good} model{plural} match their recorded checksums.")
 
 
     def _refresh_gpu(self) -> None:
@@ -815,6 +880,11 @@ class SettingsWindow(FluentWindow):
             t = Toggle(cfg[key])
             t.toggled.connect(lambda on, k=key: cfg.update({k: on}))
             card.add(Row(title, desc, t))
+        submit = Toggle(cfg["auto_submit"])
+        submit.toggled.connect(lambda on: cfg.update({"auto_submit": on}))
+        card.add(Row("\"Submit\" presses Enter",
+                     "End a take with the word \"submit\" and it's removed and Enter is sent — handy for "
+                     "chat boxes. Off by default, and it stays off when output is clipboard-only.", submit))
 
         self._page_text_ai(page)
 

@@ -45,6 +45,10 @@ CATALOG: list[ModelInfo] = [
               "NVIDIA's English model. More accurate than Large v3, and fast without a graphics card: "
               "it runs on the processor by design, so the graphics-card setting is for Whisper models. "
               "Ignores Words it should know.", engine="parakeet", repo="istupakov/parakeet-tdt-0.6b-v2-onnx"),
+    ModelInfo("parakeet-tdt-0.6b-v3", "Parakeet v3", 670, False,
+              "NVIDIA's multilingual model: 25 languages, more accurate than v2, and it also runs on the "
+              "processor by design. Ignores Words it should know.",
+              engine="parakeet", repo="istupakov/parakeet-tdt-0.6b-v3-onnx"),
     ModelInfo("large-v3-turbo", "Large v3 Turbo", 1620, False, "Close to Large v3, much faster. Best with an NVIDIA GPU."),
     ModelInfo("tiny", "Tiny (multilingual)", 75, False, "Any language. Fastest."),
     ModelInfo("base", "Base (multilingual)", 145, False, "Any language."),
@@ -154,7 +158,72 @@ def _repo_cache(repo: str) -> Path:
 
 def download(name: str, progress: ProgressFn | None = None, cancel: threading.Event | None = None) -> Path:
     eng = engine_of(name)
-    return download_files(repo_id(name), _FILES[eng], _MAIN_FILE[eng], progress, cancel)
+    path = download_files(repo_id(name), _FILES[eng], _MAIN_FILE[eng], progress, cancel)
+    _write_manifest(path, name)
+    return path
+
+
+# ------------------------------------------------------------------ manifests
+
+def _write_manifest(folder: Path, name: str) -> Path:
+    """Record {path, size, sha256} for every file of a downloaded model, so a
+    corrupted download can be caught later (VoxType's model manifests)."""
+    files = []
+    for f in sorted(folder.iterdir()):
+        if not f.is_file() or f.name == "manifest.json":
+            continue
+        h = hashlib.sha256()
+        with f.open("rb") as src:
+            for chunk in iter(lambda: src.read(1 << 22), b""):
+                h.update(chunk)
+        files.append({"path": f.name, "size": f.stat().st_size, "sha256": h.hexdigest()})
+    manifest = folder / "manifest.json"
+    manifest.write_text(json.dumps({"model": name, "files": files}, indent=2), encoding="utf-8")
+    return manifest
+
+
+def write_manifest(name: str) -> Path | None:
+    p = local_path(name)
+    return _write_manifest(p, name) if p else None
+
+
+def _manifest_entries(folder: Path) -> list[dict] | None:
+    try:
+        entries = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))["files"]
+        return entries if isinstance(entries, list) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def manifest_state(name: str, full: bool = False) -> tuple[str, str]:
+    """Compare a downloaded model against its manifest. Returns ("ok"|"none"|
+    "broken", detail); "none" says nothing to check — the model isn't here, or
+    it was downloaded before manifests were kept. The cheap check is file
+    sizes only; full recomputes every sha256."""
+    folder = local_path(name)
+    if folder is None:
+        return "none", ""
+    entries = _manifest_entries(folder)
+    if entries is None:
+        return "none", ""
+    changed = []
+    for e in entries:
+        if not isinstance(e, dict) or "path" not in e:
+            continue
+        f = folder / str(e["path"])
+        if not f.is_file() or f.stat().st_size != e.get("size"):
+            changed.append(str(e["path"]))
+        elif full:
+            h = hashlib.sha256()
+            with f.open("rb") as src:
+                for chunk in iter(lambda: src.read(1 << 22), b""):
+                    h.update(chunk)
+            if h.hexdigest() != e.get("sha256"):
+                changed.append(str(e["path"]))
+    if changed:
+        listed = ", ".join(changed[:3]) + ("…" if len(changed) > 3 else "")
+        return "broken", f"{len(changed)} file(s) changed ({listed})"
+    return "ok", ""
 
 
 def download_files(repo: str, patterns: list[str], main_file: str, progress: ProgressFn | None = None,
@@ -377,13 +446,13 @@ class ParakeetModel:
 
     CHUNK_S = 25   # longer stretches lose words (measured: 8% dropped on a 4 min take)
 
-    def __init__(self, path: Path, cpu_threads: int = 0):
+    def __init__(self, path: Path, cpu_threads: int = 0, name: str = "parakeet-tdt-0.6b-v2"):
         import onnx_asr
         import onnxruntime as rt
         opts = rt.SessionOptions()
         if cpu_threads:
             opts.intra_op_num_threads = cpu_threads
-        self._m = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v2", str(path), quantization="int8",
+        self._m = onnx_asr.load_model("nemo-" + name, str(path), quantization="int8",
                                       providers=["CPUExecutionProvider"], sess_options=opts)
 
     def _chunks(self, audio, vad: bool):
@@ -413,7 +482,7 @@ def load(name: str, device: str, compute_type: str, cpu_threads: int = 0):
         if path is None:
             raise RuntimeError(f"{name} isn't downloaded")
         log.info("Loading %s on cpu (int8)", name)
-        m = ParakeetModel(path, cpu_threads)
+        m = ParakeetModel(path, cpu_threads, name)
         list(m.transcribe(np.zeros(16000, dtype=np.float32), vad_filter=False)[0])
         return m, "cpu", "int8"
     from faster_whisper import WhisperModel

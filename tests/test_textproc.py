@@ -1,4 +1,4 @@
-from freedictate.textproc import clean, word_count
+from freedictate.textproc import clean, detect_submit, word_count
 
 
 def test_removes_fillers_and_capitalizes():
@@ -73,3 +73,55 @@ def test_literal_types_the_word():
 
 def test_words_containing_commands_are_untouched():
     assert clean("the dashboard has a colonnade") == "The dashboard has a colonnade."
+
+
+def test_portuguese_and_german_keep_um():
+    # "um" is ordinary vocabulary there (VoxType #566).
+    assert clean("Faça um commit", language="pt") == "Faça um commit."
+    assert clean("Faça um commit", language="pt-BR") == "Faça um commit."
+    assert clean("Gehen wir um die Ecke", language="de_DE") == "Gehen wir um die Ecke."
+
+
+def test_english_and_unknown_still_drop_um():
+    assert clean("so um let us commit", language="en") == "So let us commit."
+    assert clean("so um let us commit") == "So let us commit."
+
+
+def test_filler_cleanup_leaves_no_dangling_connectors():
+    assert clean("hello world, uh.") == "Hello world."
+    assert clean("hello world, um") == "Hello world."
+    assert clean("hello, uh, world") == "Hello, world."
+    assert clean("hello world, uh", end_punctuation=False) == "Hello world"
+
+
+def test_replacements_run_again_after_voice_commands():
+    # Pass one cannot match: "dash" is still a word. Only after spoken
+    # punctuation turns it into " - " does the find become matchable.
+    reps = [{"find": "-", "replace": "–"}]
+    assert clean("hello dash world", replacements=reps) == "Hello – world."
+
+
+def test_spacing_tidy_around_punctuation():
+    assert clean("call open paren x , y close paren now") == "Call (x, y) now."
+    assert clean("wait , then go") == "Wait, then go."
+    # List markers and newlines survive the tidy.
+    assert clean("things to do. new line. dot point fix it , fast") == \
+        "Things to do.\n- Fix it, fast"
+
+
+def test_detect_submit_strips_and_fires():
+    assert detect_submit("hello world submit") == ("hello world", True)
+    assert detect_submit("hello world submit.") == ("hello world", True)
+    assert detect_submit("hello world SUBMIT!") == ("hello world", True)
+    assert detect_submit("hello world, submit") == ("hello world", True)
+
+
+def test_detect_submit_keeps_sentence_punctuation():
+    assert detect_submit("hello world. submit") == ("hello world.", True)
+
+
+def test_detect_submit_ignores_other_uses():
+    assert detect_submit("submit this please") == ("submit this please", False)
+    assert detect_submit("I need to pre-submit") == ("I need to pre-submit", False)
+    assert detect_submit("hello world") == ("hello world", False)
+    assert detect_submit("submit") == ("", True)

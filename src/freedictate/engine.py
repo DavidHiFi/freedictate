@@ -535,9 +535,16 @@ class Engine:
 
     def _clean(self, raw: str) -> str:
         c = self.cfg
+        # The same language the decoder used: an English-only model forces
+        # "en" no matter what the setting says.
+        lang = c["language"]
+        info = models.BY_NAME.get(self.ms.active)
+        if info and info.english_only:
+            lang = "en"
         return textproc.clean(raw, remove_fillers=c["remove_fillers"], voice_commands=c["voice_commands"],
                               capitalize=c["capitalize"], end_punctuation=c["end_punctuation"],
-                              repeats=c["remove_repeats"], replacements=c["replacements"])
+                              repeats=c["remove_repeats"], replacements=c["replacements"],
+                              language=lang)
 
     def _do_take(self, take: Take) -> None:
         cfg = self.cfg
@@ -577,13 +584,22 @@ class Engine:
         if tidied:
             before_tidy, text = text, tidied
             took = time.monotonic() - t0
+        submit = False
+        if cfg.get("auto_submit") and cfg["output"] != "clipboard":
+            text, submit = textproc.detect_submit(text)
+            if not text:
+                self.emit("nothing", {"reason": "empty"})
+                return
         if cfg["history_enabled"]:
             try:
                 self.history.add(text, take.seconds, self.ms.active, take.app, raw=before_tidy)
             except Exception:
                 log.exception("History write failed")
-        delivered = text + (" " if cfg["trailing_space"] and cfg["output"] != "clipboard" and not text.endswith("\n") else "")
+        delivered = text + (" " if cfg["trailing_space"] and cfg["output"] != "clipboard"
+                            and not text.endswith("\n") and not submit else "")
         outcome = output.deliver(delivered, cfg["output"], cfg["restore_clipboard"], int(cfg["paste_delay_ms"]))
+        if submit and outcome in ("pasted", "typed"):
+            output.press_enter()
         self.emit("result", {"text": text, "outcome": outcome, "seconds": take.seconds, "took": took})
         if outcome != "blocked":
             audio.play("done", vol)

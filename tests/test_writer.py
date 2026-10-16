@@ -159,9 +159,11 @@ def test_both_engines_load_through_models_load(monkeypatch, tmp_path):
     assert calls == ["whisper"] and (dev, ct) == ("cpu", "int8")
 
     class FakeParakeet(models.ParakeetModel):
-        def __init__(self, path, cpu_threads=0):
-            calls.append("parakeet")
+        def __init__(self, path, cpu_threads=0, name=""):
+            calls.append(("parakeet", name))
     monkeypatch.setattr(models, "ParakeetModel", FakeParakeet)
     monkeypatch.setattr(FakeParakeet, "transcribe", lambda self, a, **k: (iter([]), None))
     m, dev, ct = models.load("parakeet-tdt-0.6b-v2", "cuda", "auto")
-    assert calls[-1] == "parakeet" and (dev, ct) == ("cpu", "int8")   # Parakeet is CPU by design
+    assert calls[-1] == ("parakeet", "parakeet-tdt-0.6b-v2") and (dev, ct) == ("cpu", "int8")   # Parakeet is CPU by design
+    models.load("parakeet-tdt-0.6b-v3", "cuda", "auto")
+    assert calls[-1] == ("parakeet", "parakeet-tdt-0.6b-v3")   # each entry names its own onnx-asr model

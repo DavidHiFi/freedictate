@@ -5,7 +5,26 @@ import re
 
 # Hesitation sounds only. Words like "like" or "you know" carry meaning often
 # enough that removing them would change what was said.
-_FILLER = re.compile(r"(?<![\w'])(?:u+m+|u+h+|e+r+m*|a+h+|h+m+|m+h*m+)(?![\w'])[,.]?\s*", re.IGNORECASE)
+_FILLER_CORE = (r"u+h+", r"e+r+m*", r"a+h+", r"h+m+", r"m+h*m+")
+# "um" on its own: a real word in Portuguese (masculine indefinite article)
+# and German (preposition), so it is only filtered for other languages.
+# Cf. VoxType src/text/mod.rs filler_collisions (#566).
+_FILLER_UM = r"u+m+"
+_FILLER_TAIL = r"(?![\w'])[,.]?\s*"
+_FILLER = re.compile(r"(?<![\w'])(?:" + _FILLER_UM + "|" + "|".join(_FILLER_CORE) + r")" + _FILLER_TAIL,
+                     re.IGNORECASE)
+_FILLER_STRICT = re.compile(r"(?<![\w'])(?:" + "|".join(_FILLER_CORE) + r")" + _FILLER_TAIL,
+                            re.IGNORECASE)
+
+
+def _base_lang(language: str | None) -> str:
+    return (language or "").split("-")[0].split("_")[0].lower()
+
+
+def _filler_re(language: str | None) -> re.Pattern:
+    """Hesitation-sound matcher for the take language. Portuguese and German
+    keep "um", which is ordinary vocabulary there."""
+    return _FILLER_STRICT if _base_lang(language) in ("pt", "de") else _FILLER
 
 # Private marks used while the text is being rebuilt; none survive clean().
 _CAP = "\x01"      # the next letter starts a sentence
@@ -135,21 +154,38 @@ def _cap_lines(text: str) -> str:
     return re.sub(r"(^|\n)((?:[-*] |\d+\. )?\s*[a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
 
 
+def _tidy_punct(text: str) -> str:
+    """No space before a closing mark, none after an opening one (VoxType's
+    clean_punctuation_spacing). List markers ("- item") survive: "-" is in
+    neither class, and only runs of spaces and tabs are touched, so the
+    newlines that voice commands emit are left alone."""
+    text = re.sub(r"[ \t]+([.,!?;:)\]}])", r"\1", text)
+    return re.sub(r"([({\[])[ \t]+", r"\1", text)
+
+
 def clean(raw: str, *, remove_fillers: bool = True, voice_commands: bool = True,
           capitalize: bool = True, end_punctuation: bool = True, repeats: bool = False,
-          replacements: list[dict] | None = None) -> str:
+          replacements: list[dict] | None = None, language: str | None = None) -> str:
     text = " ".join(raw.split())
     if not text:
         return ""
     if remove_fillers:
-        text = _FILLER.sub("", text)
+        text = _filler_re(language).sub("", text)
         text = re.sub(r"\s+([,.!?])", r"\1", text)
-        text = re.sub(r"^[,.\s]+", "", text)
+        # Removing a filler can leave a connector pointing at nothing.
+        text = re.sub(r"([,;:])(\s*[,;:])+", r"\1", text)   # "hello, uh, world" keeps one comma
+        text = re.sub(r"([,;:]+)(\s*[.!?])", r"\2", text)   # "hello world, uh." -> "hello world."
+        text = text.rstrip(" ,;:")                          # a dangling trailing connector
+        text = re.sub(r"^[,.;:\s]+", "", text)              # ... or a leading one
     if repeats:
         text = remove_repeats(text)
     text = apply_replacements(text, replacements)
     if voice_commands:
         text = _spoken(text)
+        text = _tidy_punct(text)
+    # VoxType runs replacements again after spoken punctuation, so a find
+    # that only becomes matchable once "dash dash" is " - " still wins.
+    text = apply_replacements(text, replacements)
     if capitalize:
         text = re.sub(_CAP + r"([\s\"(]*)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
     text = text.replace(_CAP, "")
@@ -162,6 +198,21 @@ def clean(raw: str, *, remove_fillers: bool = True, voice_commands: bool = True,
     if end_punctuation and text[-1].isalnum() and not re.match(r"[-*] |\d+\. ", last_line):
         text += "."
     return text
+
+
+_SUBMIT_RE = re.compile(r"(?:^|\s)submit[.!?,;]*\s*$", re.IGNORECASE)
+
+
+def detect_submit(text: str) -> tuple[str, bool]:
+    """VoxType's smart auto-submit: a take that ends with the word "submit"
+    (optionally punctuated) is stripped of it and sends Enter. A hyphen
+    before it ("pre-submit") doesn't count — the boundary is whitespace, not
+    a word edge. Sentence punctuation before it survives: "hello world.
+    submit" keeps its full stop, "hello world, submit" loses the comma."""
+    m = _SUBMIT_RE.search(text)
+    if not m:
+        return text, False
+    return text[:m.start()].rstrip(" ,;"), True
 
 
 def word_count(text: str) -> int:

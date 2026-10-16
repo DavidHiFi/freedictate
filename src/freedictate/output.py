@@ -87,6 +87,11 @@ def _chord(mod: int, vk: int, ext: bool = False) -> None:
     _send([_key(mod), _key(vk, flags=f), _key(vk, flags=f | KEYUP), _key(mod, flags=KEYUP)])
 
 
+def press_enter() -> None:
+    """Send the Enter key (smart auto-submit)."""
+    _send([_key(VK_RETURN), _key(VK_RETURN, flags=KEYUP)])
+
+
 def type_text(text: str) -> None:
     """Type characters one by one as Unicode input. Slower than pasting, but
     works where paste is blocked and leaves the clipboard alone."""
