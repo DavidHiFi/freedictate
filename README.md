@@ -99,6 +99,22 @@ pwsh -File scripts\build.ps1
 
 runs the test suite, freezes the app with PyInstaller, self-tests the frozen exe, compiles the Inno Setup installer, and zips the portable build into `dist\`. Pass `-SkipInstaller`, `-SkipTests` or `-Python <path>` as needed; see the header of `scripts\build.ps1`. Source layout: `src\freedictate` (core), `src\freedictate\ui` (settings window and overlay), `tests\`, `packaging\`.
 
+## Contributing
+
+Bug reports, feature ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks and what to include.
+
+## Star history
+
+⭐ Thanks to everyone using FreeDictate, reporting dictation bugs and sending fixes.
+
+<a href="https://www.star-history.com/?repos=DavidHiFi%2Ffreedictate&amp;type=date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=DavidHiFi/freedictate&amp;type=date&amp;theme=dark&amp;legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=DavidHiFi/freedictate&amp;type=date" />
+    <img alt="DavidHiFi/freedictate GitHub star history" src="https://api.star-history.com/chart?repos=DavidHiFi/freedictate&amp;type=date" />
+  </picture>
+</a>
+
 ## License
 
 [MIT](LICENSE)
