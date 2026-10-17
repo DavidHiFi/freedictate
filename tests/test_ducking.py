@@ -61,11 +61,13 @@ def worker(monkeypatch, tmp_path):
 
 
 def set_sessions(worker, sessions):
-    """sessions: list of (pid, [FakeVolume, ...]) — a pid may own several."""
+    """sessions: list of (pid, [FakeVolume, ...]) — a pid may own several.
+    Each FakeVolume is one session; its identity is the session key, the way
+    the instance identifier stays fixed across real re-enumerations."""
     flat = []
     for pid, vols in sessions:
         for v in vols:
-            flat.append((pid, v.volume, v.muted, v))
+            flat.append((f"session-{id(v)}|{pid}", pid, v.volume, v.muted, v))
     ducking._enumerate = lambda: flat
 
 
@@ -158,3 +160,33 @@ def test_recover_ignores_a_stale_record(worker, tmp_path):
     ducking.RECORD.write_text(json.dumps({"version": 2, "saved": 0.0, "sessions": []}))
     ducking.recover()
     assert not ducking.RECORD.exists()
+
+
+def test_rescan_restores_a_new_session_from_an_already_ducked_process(worker):
+    """Regression: a second session opened mid-take by a process that was
+    already ducked used to be muted but never recorded, so it stayed muted."""
+    first = FakeVolume(0.7, False)
+    set_sessions(worker, [(321, [first])])
+    ducking.start(0)
+    assert first.muted
+    second = FakeVolume(0.4, False)
+    set_sessions(worker, [(321, [first, second])])
+    ducking.rescan(0)
+    assert second.muted
+    rec = json.loads(ducking.RECORD.read_text())
+    assert len(rec["sessions"]) == 2 and all(s["key"] for s in rec["sessions"])
+    ducking.rescan(0)          # a re-enumeration must not overwrite the originals
+    ducking.stop()
+    assert (first.volume, first.muted) == (0.7, False)
+    assert (second.volume, second.muted) == (0.4, False)
+
+
+def test_recover_matches_sessions_by_key(worker):
+    a, b = FakeVolume(1.0, True), FakeVolume(1.0, True)
+    set_sessions(worker, [(77, [a, b])])
+    key_b = ducking._enumerate()[1][0]
+    ducking.RECORD.write_text(json.dumps({"version": 3, "saved": 0.0, "sessions": [
+        {"key": key_b, "pid": 77, "volume": 0.25, "muted": False}]}))
+    ducking.recover()
+    assert (b.volume, b.muted) == (0.25, False)
+    assert (a.volume, a.muted) == (1.0, True)     # the other session is left alone
