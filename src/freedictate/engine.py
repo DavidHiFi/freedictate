@@ -16,7 +16,7 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import audio, hotkeys, models, output, textproc, writer
+from . import audio, ducking, hotkeys, models, output, textproc, writer
 from .config import Config
 from .history import History
 from .log import log
@@ -67,6 +67,8 @@ class Engine:
         self._take_app = ""
         self.suspended = False     # True while Settings records a new hotkey
         self._tidy_warned = False  # "AI tidy-up isn't ready" is said once per session
+        self._privacy_warned = False  # "exclusive capture failed" is said once per session
+        self._duck_rescan_at = 0.0  # monotonic deadline for the mid-take session re-scan
         self._last_used = time.monotonic()  # last dictation activity; drives idle VRAM release
         cfg.on_change(self._config_changed)
 
@@ -115,6 +117,10 @@ class Engine:
         self._transcriber.start()
         threading.Thread(target=self._poll_loop, daemon=True, name="hotkey").start()
         threading.Thread(target=self._idle_loop, daemon=True, name="idle-unload").start()
+        if ducking.available():
+            # A previous run may have died mid-take with other apps' audio
+            # still ducked; the restore record survived for exactly this.
+            threading.Thread(target=ducking.recover, daemon=True, name="ducking-recover").start()
         self._apply_idle_settings()
         if not self._instant_unload():
             self.ensure_model()
@@ -140,6 +146,8 @@ class Engine:
         self._stop.set()
         self._download_cancel.set()
         self.recorder.stop()
+        if ducking.available():
+            ducking.stop()
         self._jobs.put(None)
         writer.stop()
         t = getattr(self, "_transcriber", None)
@@ -409,6 +417,10 @@ class Engine:
                             recording, cancel, pressed_at = True, False, now
                             tap_toggle = mode == "toggle"
                 else:
+                    if now - self._duck_rescan_at >= ducking._RESCAN_INTERVAL:
+                        self._duck_rescan_at = now
+                        if self.cfg["isolate_output_while_dictating"]:
+                            ducking.rescan(int(self.cfg["isolate_output_level"]))
                     if (esc and not esc_was) or self.paused:
                         cancel = True
                     stop = cancel
@@ -438,10 +450,30 @@ class Engine:
     def _begin(self) -> bool:
         try:
             self._take_app = output.foreground_process()[1]
+            if self.cfg["isolate_output_while_dictating"]:
+                ducking.start(int(self.cfg["isolate_output_level"]))
             self.recorder.voice_threshold = max(0.004, float(self.cfg["silence_peak"]) * 2)
-            self.recorder.start(self.cfg["input_device"])
+            exclusive = bool(self.cfg["mic_privacy_while_dictating"])
+            try:
+                self.recorder.start(self.cfg["input_device"], exclusive=exclusive)
+            except Exception:
+                if not exclusive:
+                    raise
+                # Exclusive capture can lose the race to another exclusive
+                # holder; dictation must still work, so fall back to shared
+                # and say so once per session.
+                log.warning("Exclusive capture failed; falling back to shared", exc_info=True)
+                if not self._privacy_warned:
+                    self._privacy_warned = True
+                    self.emit("notice", {
+                        "title": "Mic privacy isn't active",
+                        "text": "The microphone couldn't be captured exclusively this time. "
+                                "Other apps may hear you until this take ends.",
+                    })
+                self.recorder.start(self.cfg["input_device"])
         except Exception as e:
             log.exception("Microphone failed to open")
+            ducking.stop()   # never leave other apps' audio ducked
             self.emit("error", {"title": "Couldn't open the microphone", "text": _short(e)})
             audio.play("error", self.cfg["sound_volume"] if self.cfg["sounds"] else 0)
             return False
@@ -456,20 +488,26 @@ class Engine:
         return True
 
     def _end(self, cancelled: bool) -> None:
-        data, secs = self.recorder.stop()
-        vol = self.cfg["sound_volume"] if self.cfg["sounds"] else 0
-        if cancelled:
-            self._set_state("ready")
-            audio.play("cancel", vol)
-            self.emit("cancelled", {})
-            return
-        audio.play("stop", vol)
-        if data is None or secs < float(self.cfg["min_seconds"]):
-            self._set_state("ready")
-            return
-        self._touch()
-        self._set_state("transcribing")
-        self._jobs.put(Take(data, secs, self._take_app))
+        try:
+            data, secs = self.recorder.stop()
+            vol = self.cfg["sound_volume"] if self.cfg["sounds"] else 0
+            if cancelled:
+                self._set_state("ready")
+                audio.play("cancel", vol)
+                self.emit("cancelled", {})
+                return
+            audio.play("stop", vol)
+            if data is None or secs < float(self.cfg["min_seconds"]):
+                self._set_state("ready")
+                return
+            self._touch()
+            self._set_state("transcribing")
+            self._jobs.put(Take(data, secs, self._take_app))
+        finally:
+            # Esc, max-seconds, silence stop and the happy path all restore
+            # the other apps' audio exactly once, here.
+            if ducking.available():
+                ducking.stop()
 
     def toggle_pause(self) -> bool:
         self.paused = not self.paused  # the hotkey loop cancels a take in progress

@@ -79,6 +79,122 @@ def resolve(name: str) -> int | None:
     return None
 
 
+MME_NAME_MAX = 31   # MME (waveIn) device names are cut to 31 characters
+
+
+def _wavein_endpoints() -> list[tuple[str, str]]:
+    """[(MME name, Core Audio endpoint ID)] for every waveIn device, in waveIn
+    order. The endpoint ID is the host-API-independent identity of the
+    physical input (DRV_QUERYFUNCTIONINSTANCEID). Empty on failure."""
+    import ctypes
+    from ctypes import wintypes
+
+    class WAVEINCAPSW(ctypes.Structure):
+        _fields_ = [("wMid", wintypes.WORD), ("wPid", wintypes.WORD), ("vDriverVersion", ctypes.c_uint),
+                    ("szPname", ctypes.c_wchar * 32), ("dwFormats", wintypes.DWORD),
+                    ("wChannels", wintypes.WORD), ("wReserved1", wintypes.WORD)]
+
+    DRV_QUERYFUNCTIONINSTANCEID = 0x0800 + 17
+    DRV_QUERYFUNCTIONINSTANCEIDSIZE = 0x0800 + 18
+    try:
+        winmm = ctypes.WinDLL("winmm")
+        winmm.waveInGetNumDevs.restype = ctypes.c_uint
+        winmm.waveInGetDevCapsW.argtypes = [ctypes.c_size_t, ctypes.c_void_p, ctypes.c_uint]
+        winmm.waveInGetDevCapsW.restype = ctypes.c_uint
+        winmm.waveInMessage.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+        winmm.waveInMessage.restype = ctypes.c_uint
+        out = []
+        for i in range(winmm.waveInGetNumDevs()):
+            caps = WAVEINCAPSW()
+            if winmm.waveInGetDevCapsW(i, ctypes.byref(caps), ctypes.sizeof(caps)) != 0:
+                return []
+            size = ctypes.c_size_t(0)
+            if winmm.waveInMessage(ctypes.c_void_p(i), DRV_QUERYFUNCTIONINSTANCEIDSIZE, ctypes.byref(size), None) != 0:
+                return []
+            buf = ctypes.create_unicode_buffer(size.value // 2 + 1)
+            if winmm.waveInMessage(ctypes.c_void_p(i), DRV_QUERYFUNCTIONINSTANCEID, buf,
+                                   ctypes.c_void_p(size.value)) != 0:
+                return []
+            out.append((caps.szPname, buf.value))
+        return out
+    except Exception:
+        log.debug("waveIn endpoint query failed", exc_info=True)
+        return []
+
+
+def _endpoint_names() -> dict[str, str]:
+    """{endpoint ID: full friendly name} for capture endpoints. The friendly
+    name is what PortAudio's WASAPI host API shows. Empty on failure."""
+    try:
+        import comtypes
+        try:
+            comtypes.CoInitialize()
+        except OSError:
+            pass   # already initialised in another apartment model on this thread
+        from pycaw.constants import DEVICE_STATE, EDataFlow
+        from pycaw.pycaw import AudioUtilities
+        return {d.id: d.FriendlyName for d in
+                AudioUtilities.GetAllDevices(EDataFlow.eCapture.value, DEVICE_STATE.ACTIVE.value)
+                if d.id and d.FriendlyName}
+    except Exception:
+        log.debug("Capture endpoint names unavailable", exc_info=True)
+        return {}
+
+
+def _full_name(mme_index: int) -> str | None:
+    """Full friendly name of the physical device behind a PortAudio MME input,
+    through its endpoint ID; None when Windows can't say."""
+    sd = _sd()
+    devices = sd.query_devices()
+    name = devices[mme_index]["name"]
+    mme = devices[mme_index]["hostapi"]
+    # The k-th MME device with this name is the k-th waveIn device with it.
+    ordinal = sum(1 for i, d in enumerate(devices[:mme_index])
+                  if d["hostapi"] == mme and d["name"] == name)
+    ids = [eid for pname, eid in _wavein_endpoints() if pname == name]
+    if ordinal >= len(ids):
+        return None
+    return _endpoint_names().get(ids[ordinal])
+
+
+def _wasapi_native(name: str) -> tuple[int, float, int] | None:
+    """(index, native rate, channels) of the WASAPI input that is the same
+    physical device as the MME input shared capture would open.
+
+    Exclusive capture must open at the device's own format; shared-mode
+    16 kHz opens fail on many interfaces (paInvalidSampleRate). With no
+    device configured this follows the MME default, not WASAPI's own
+    default, so both modes record the same microphone. When the device
+    can't be identified exactly this returns None and the take falls back
+    to shared capture rather than open the wrong microphone."""
+    sd = _sd()
+    apis = sd.query_hostapis()
+    wasapi = next((i for i, a in enumerate(apis) if a["name"] == "Windows WASAPI"), None)
+    mme = next((i for i, a in enumerate(apis) if a["name"] == "MME"), None)
+    if wasapi is None or mme is None:
+        return None
+    mme_index = resolve(name) if name else apis[mme]["default_input_device"]
+    if mme_index is None or mme_index < 0:
+        return None
+    devices = sd.query_devices()
+    mme_name = devices[mme_index]["name"].rstrip()
+    inputs = [(i, d) for i, d in enumerate(devices)
+              if d["hostapi"] == wasapi and d["max_input_channels"] > 0
+              and not d["name"].rstrip().endswith("[Loopback]")]   # an output's loopback, not a mic
+    full = _full_name(mme_index)
+    if full:
+        matches = [(i, d) for i, d in inputs if d["name"].rstrip() == full.rstrip()]
+    elif len(devices[mme_index]["name"]) < MME_NAME_MAX:
+        matches = [(i, d) for i, d in inputs if d["name"].rstrip() == mme_name]
+    else:
+        matches = [(i, d) for i, d in inputs if d["name"].startswith(mme_name)]
+    if len(matches) != 1:
+        log.warning("No unique WASAPI input for microphone %r (%d candidates)", mme_name, len(matches))
+        return None
+    i, d = matches[0]
+    return i, float(d["default_samplerate"]), int(d["max_input_channels"])
+
+
 class Recorder:
     """One take at a time. The stream is opened per take so Windows only shows
     the microphone-in-use indicator while you are actually dictating."""
@@ -87,6 +203,8 @@ class Recorder:
         self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._stream = None
+        self._native_rate = RATE   # device rate while capturing exclusively
+        self._resampler = None     # soxr stream: native rate -> 16 kHz, state carried across blocks
         self.level = 0.0          # recent RMS, 0..1
         self.peak = 0.0           # loudest sample in the take
         self.started = 0.0
@@ -101,7 +219,36 @@ class Recorder:
         return time.monotonic() - self.started if self.active else 0.0
 
     def _callback(self, indata, frames, t, status):
-        chunk = indata[:, 0].copy()
+        self._accept(indata[:, 0].copy())
+
+    def _exclusive_callback(self, indata, frames, t, status):
+        """Native-format blocks arrive at the device rate; reduce to 16 kHz mono
+        here so the recogniser pipeline never sees the difference. One
+        streaming resampler carries its filter state across blocks: it
+        low-pass filters before decimating (no aliasing) and loses no samples
+        at block edges (no drift)."""
+        x = indata.mean(axis=1) if indata.shape[1] > 1 else indata[:, 0]
+        rs = self._resampler
+        if rs is None:
+            self._accept(np.ascontiguousarray(x, dtype=np.float32))
+            return
+        chunk = rs.resample_chunk(np.ascontiguousarray(x, dtype=np.float32))
+        if len(chunk):
+            self._accept(chunk)
+
+    def _flush_resampler(self) -> None:
+        rs, self._resampler = self._resampler, None
+        if rs is not None:
+            try:
+                tail = rs.resample_chunk(np.zeros(0, dtype=np.float32), last=True)
+            except Exception:
+                log.debug("Resampler flush failed", exc_info=True)
+                return
+            if len(tail):
+                with self._lock:
+                    self._chunks.append(tail)
+
+    def _accept(self, chunk: np.ndarray) -> None:
         rms = float(np.sqrt(np.mean(chunk * chunk))) if len(chunk) else 0.0
         with self._lock:
             self._chunks.append(chunk)
@@ -112,14 +259,36 @@ class Recorder:
         if rms > self.voice_threshold:
             self.last_voice = time.monotonic()
 
-    def start(self, device_name: str) -> None:
+    def start(self, device_name: str, exclusive: bool = False) -> None:
         sd = _sd()
         self.stop()
         with self._lock:
             self._chunks = []
         self.level = self.peak = 0.0
-        stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32",
-                                device=resolve(device_name), callback=self._callback, blocksize=800)
+        if exclusive:
+            native = _wasapi_native(device_name)
+            if native is None:
+                raise RuntimeError("No WASAPI input matches the configured microphone")
+            index, rate, channels = native
+            if channels < 1:
+                channels = 1
+            self._native_rate = rate
+            self._resampler = None
+            if int(round(rate)) != RATE:
+                import soxr
+                self._resampler = soxr.ResampleStream(rate, RATE, 1, dtype="float32", quality="HQ")
+            try:
+                wasapi = sd.WasapiSettings(exclusive=True)
+            except Exception:
+                wasapi = None
+            if wasapi is None:
+                raise RuntimeError("WASAPI exclusive capture is unavailable")
+            stream = sd.InputStream(samplerate=rate, channels=channels, dtype="float32",
+                                    device=index, callback=self._exclusive_callback,
+                                    blocksize=800, extra_settings=wasapi)
+        else:
+            stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32",
+                                    device=resolve(device_name), callback=self._callback, blocksize=800)
         stream.start()
         self._stream = stream
         self.started = self.last_voice = time.monotonic()
@@ -132,6 +301,7 @@ class Recorder:
                 stream.close()
             except Exception:
                 log.debug("Closing the input stream failed", exc_info=True)
+        self._flush_resampler()   # the callback has stopped; emit the filter's tail
         with self._lock:
             chunks, self._chunks = self._chunks, []
         self.level = 0.0
