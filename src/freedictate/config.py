@@ -14,6 +14,7 @@ DEFAULTS: dict[str, Any] = {
     # dictation
     "hotkey": "ctrl+win",
     "hotkey_mode": "hold",          # hold | toggle | both
+    "cancel_key": "esc",            # stops a take at any point: recording, or while it is written out
     "model": "small.en",
     "language": "en",               # ISO code, or "auto"
     "input_device": "",             # device name; "" is the system default

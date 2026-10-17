@@ -17,7 +17,7 @@ Unlimited local speech-to-text dictation for Windows 11. Hold a shortcut, speak,
 2. Hold **Ctrl+Win** (the default hotkey) and speak.
 3. Release. The transcript is pasted at your cursor.
 
-**Esc** cancels a take. In *toggle* mode a short press starts and a second press stops; in *both* mode a tap latches and holding pushes to talk. A small overlay near your cursor shows the input level and a timer while you speak.
+The **stop key** (Esc by default, changeable in Settings) drops a take at any point: while you talk, or while it's being written out. In *toggle* mode a short press starts and a second press stops; in *both* mode a tap latches and holding pushes to talk. A small overlay near your cursor shows the input level and a timer while you speak.
 
 ## Download
 

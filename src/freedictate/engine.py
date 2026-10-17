@@ -44,6 +44,7 @@ class Take:
     app: str = ""
     file: str = ""                # set when transcribing a file instead of a take
     on_text: Callable[[str], None] | None = field(default=None, repr=False)
+    seq: int = 0                  # order of the take, so the stop key can drop it; 0 is never dropped
 
 
 class Engine:
@@ -70,6 +71,9 @@ class Engine:
         self._privacy_warned = False  # "exclusive capture failed" is said once per session
         self._duck_rescan_at = 0.0  # monotonic deadline for the mid-take session re-scan
         self._last_used = time.monotonic()  # last dictation activity; drives idle VRAM release
+        self._cancel_matcher = self._make_cancel_matcher()
+        self._take_seq = 0          # takes handed to the transcriber so far
+        self._cancelled_upto = 0    # takes numbered up to this were stopped with the stop key
         cfg.on_change(self._config_changed)
 
     # ---------------------------------------------------------------- state
@@ -155,9 +159,15 @@ class Engine:
             # Let a take in flight finish writing history before App.quit() closes the db.
             t.join(timeout=2.0)
 
+    def _make_cancel_matcher(self) -> hotkeys.Matcher:
+        key = self.cfg.get("cancel_key", "esc")
+        return hotkeys.Matcher(key if hotkeys.is_valid(key) else "esc")
+
     def _config_changed(self, keys: set[str]) -> None:
         if "hotkey" in keys and hotkeys.is_valid(self.cfg["hotkey"]):
             self._matcher = hotkeys.Matcher(self.cfg["hotkey"])
+        if "cancel_key" in keys:
+            self._cancel_matcher = self._make_cancel_matcher()
         if keys & {"model", "device", "compute_type", "cpu_threads"}:
             self.ensure_model(force="model" not in keys)
         if keys & {"hotkey", "hotkey_mode", "model"}:
@@ -271,11 +281,11 @@ class Engine:
         if self.unload_model("take done") and self.cfg["ai_tidy"]:
             writer.stop()   # the writing model goes back to zero with it
 
-    def _wait_for_model(self, timeout: float = 120.0) -> bool:
+    def _wait_for_model(self, timeout: float = 120.0, abort: Callable[[], bool] | None = None) -> bool:
         """Wait for a reloading model after an idle unload. True when ready."""
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            if self._stop.is_set():
+            if self._stop.is_set() or (abort is not None and abort()):
                 return False
             if self.model is not None:
                 return True
@@ -400,12 +410,13 @@ class Engine:
         recording = False
         tap_toggle = False           # current take is latched (toggle, or a tap in "both")
         pressed_at = 0.0
-        hot_was = esc_was = False
+        hot_was = stop_was = False
         cancel = False
         while not self._stop.is_set():
             try:
                 hot = self._matcher.held()
-                esc = hotkeys.key_down(hotkeys.VK_ESCAPE)
+                stop_key = self._cancel_matcher.held() and not self.suspended
+                stop_press = stop_key and not stop_was
                 mode = self.cfg["hotkey_mode"]
                 now = time.monotonic()
                 press = hot and not hot_was
@@ -416,12 +427,14 @@ class Engine:
                         if self._begin():
                             recording, cancel, pressed_at = True, False, now
                             tap_toggle = mode == "toggle"
+                    elif stop_press:
+                        self._cancel_queued()
                 else:
                     if now - self._duck_rescan_at >= ducking._RESCAN_INTERVAL:
                         self._duck_rescan_at = now
                         if self.cfg["isolate_output_while_dictating"]:
                             ducking.rescan(int(self.cfg["isolate_output_level"]))
-                    if (esc and not esc_was) or self.paused:
+                    if stop_press or self.paused:
                         cancel = True
                     stop = cancel
                     if mode == "hold" or (mode == "both" and not tap_toggle):
@@ -441,7 +454,7 @@ class Engine:
                     if stop:
                         recording = False
                         self._end(cancel)
-                hot_was, esc_was = hot, esc
+                hot_was, stop_was = hot, stop_key
             except Exception:
                 log.exception("Hotkey loop error")
                 time.sleep(0.5)
@@ -487,11 +500,28 @@ class Engine:
         audio.play("start", self.cfg["sound_volume"] if self.cfg["sounds"] else 0)
         return True
 
+    def _cancel_queued(self) -> None:
+        """The stop key while a take is being written out. The decode itself
+        can't be interrupted, so it finishes in the background and its text is
+        dropped; the app is ready again at once."""
+        if self.state != "transcribing":
+            return
+        self._cancelled_upto = self._take_seq
+        log.info("Take stopped while transcribing; its text will be dropped")
+        audio.play("cancel", self.cfg["sound_volume"] if self.cfg["sounds"] else 0)
+        self.emit("cancelled", {})
+        self._set_state("loading" if self.ms.status in ("downloading", "loading") else "ready")
+
+    def _cancelled(self, take: Take) -> bool:
+        return take.seq != 0 and take.seq <= self._cancelled_upto
+
     def _end(self, cancelled: bool) -> None:
         try:
             data, secs = self.recorder.stop()
             vol = self.cfg["sound_volume"] if self.cfg["sounds"] else 0
             if cancelled:
+                # The stop key also drops takes still waiting behind this one.
+                self._cancelled_upto = self._take_seq
                 self._set_state("ready")
                 audio.play("cancel", vol)
                 self.emit("cancelled", {})
@@ -502,7 +532,8 @@ class Engine:
                 return
             self._touch()
             self._set_state("transcribing")
-            self._jobs.put(Take(data, secs, self._take_app))
+            self._take_seq += 1
+            self._jobs.put(Take(data, secs, self._take_app, seq=self._take_seq))
         finally:
             # Esc, max-seconds, silence stop and the happy path all restore
             # the other apps' audio exactly once, here.
@@ -587,6 +618,9 @@ class Engine:
     def _do_take(self, take: Take) -> None:
         cfg = self.cfg
         vol = cfg["sound_volume"] if cfg["sounds"] else 0
+        if self._cancelled(take):
+            log.info("Take stopped before transcription")
+            return
         peak = float(abs(take.audio).max()) if len(take.audio) else 0.0
         if peak < float(cfg["silence_peak"]):
             log.info("Near silence (peak %.4f); nothing pasted", peak)
@@ -597,7 +631,9 @@ class Engine:
             # The model was unloaded while idle. It reloads on hotkey press,
             # but a slow load can still be running when the take lands here.
             self.emit("state", {"state": self.state})
-            if not self._wait_for_model():
+            if not self._wait_for_model(abort=lambda: self._cancelled(take)):
+                if self._cancelled(take):
+                    return
                 log.warning("Speech model wasn't ready for a take; audio dropped")
                 self.emit("error", {"title": "The speech model is still loading",
                                     "text": "Hold the shortcut again in a few seconds."})
@@ -608,6 +644,9 @@ class Engine:
         raw = self._decode(take.audio)
         took = time.monotonic() - t0
         self._touch()
+        if self._cancelled(take):
+            log.info("Take stopped while transcribing; text dropped")
+            return
         if not raw or (raw.lower() in _PHANTOMS and peak < 0.05):
             log.info("Nothing recognised in %.1fs of audio", take.seconds)
             self.emit("nothing", {"reason": "empty"})
@@ -618,7 +657,12 @@ class Engine:
             return
         log.info("Transcribed %.1fs in %.2fs: %d chars", take.seconds, took, len(text))
         before_tidy = ""
+        if self._cancelled(take):
+            return
         tidied = self._tidy(text)
+        if self._cancelled(take):
+            log.info("Take stopped during tidy-up; text dropped")
+            return
         if tidied:
             before_tidy, text = text, tidied
             took = time.monotonic() - t0

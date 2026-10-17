@@ -48,6 +48,8 @@ class App(QObject):
         self.gpu_busy = False
         self._gpu_cancel = threading.Event()
         self._last_error_note = 0.0
+        self._applied_css = ""
+        self._applied_font = None
 
         self.apply_look()
         from .ui.overlay import Overlay
@@ -82,8 +84,16 @@ class App(QObject):
         self._polisher.translucent = translucent
         css = theme.stylesheet(pal, translucent)
         css = css.replace("url(:/fd/chevron-down.svg)", f"url({icons.svg_file('chevron-down', pal.sub)})")
-        self.qapp.setStyleSheet(css)
-        self.qapp.setFont(theme.font())
+        # Setting the app stylesheet re-polishes every widget, which took about
+        # half a second with Settings open (measured). Most look changes leave
+        # the sheet and font as they were, so only apply what changed.
+        if css != self._applied_css:
+            self.qapp.setStyleSheet(css)
+            self._applied_css = css
+        font = theme.font()
+        if self._applied_font is None or font != self._applied_font:
+            self.qapp.setFont(font)
+            self._applied_font = font
         widgets.set_reduce_motion(self.cfg["reduce_motion"])
         if self.settings_window is not None:
             self.settings_window.relook()
@@ -206,8 +216,9 @@ class App(QObject):
             self.settings_window.closed.connect(
                 lambda w=self.settings_window: self._settings_closed(w))
         w = self.settings_window
-        if page:
-            w.go(page)
+        # A kept window can be stale: history written while it was hidden, or a
+        # model that changed. go() refreshes the page that is about to show.
+        w.go(page or self.cfg["window_page"])
         if w.isMinimized():
             w.showNormal()
         w.show()

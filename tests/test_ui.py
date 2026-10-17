@@ -582,3 +582,45 @@ def test_transcribing_dots_sit_on_the_bar_midline(qapp, env):
     finally:
         bar.deleteLater()
         pump(qapp)
+
+def test_stop_key_row_refuses_the_dictation_shortcut(qapp, env):
+    """The stop key and the dictation shortcut may not share a key."""
+    cfg = fresh_cfg(cancel_key="esc", hotkey="ctrl+win")   # settings persist between tests
+    win = open_window(qapp, cfg, env)
+    try:
+        assert win.cancel_edit.value == "esc"
+        win.cancel_edit.recorded.emit("ctrl+win")
+        assert cfg["cancel_key"] == "esc"
+        assert win.cancel_edit.value == "esc"
+        win.cancel_edit.recorded.emit("f8")
+        assert cfg["cancel_key"] == "f8"
+    finally:
+        win.dispose()
+        win.close()
+
+
+def test_dictation_shortcut_refuses_the_stop_key(qapp, env):
+    cfg = fresh_cfg(cancel_key="f8", hotkey="ctrl+win")
+    win = open_window(qapp, cfg, env)
+    try:
+        win.hotkey_edit.recorded.emit("f8")
+        assert cfg["hotkey"] == "ctrl+win"
+        assert win.hotkey_edit.value == "ctrl+win"
+    finally:
+        win.dispose()
+        win.close()
+
+
+def test_closing_settings_hides_it_and_keeps_the_window(qapp, env):
+    """Closing hides the window so the next tray click is instant. Only
+    dispose() tears it down."""
+    win = open_window(qapp, fresh_cfg(), env)
+    win.close()
+    qapp.processEvents()
+    assert not win.isVisible()
+    assert win.pages, "pages stay built for the next open"
+    win.show()
+    qapp.processEvents()
+    assert win.isVisible()
+    win.dispose()
+    win.close()

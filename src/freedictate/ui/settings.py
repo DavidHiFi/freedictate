@@ -248,17 +248,23 @@ class SettingsWindow(FluentWindow):
                 pass
 
     def closeEvent(self, e):
-        self._stop_meter()
+        self._stop_meter()          # releases the microphone the level test holds
         if self.hotkey_edit._timer.isActive():
             self.hotkey_edit.cancel()
+        if self.cancel_edit._timer.isActive():
+            self.cancel_edit.cancel()
         self.save_geometry()
         if not self.cfg["first_run_done"] and not self._disposed:
             self.cfg["first_run_done"] = True
             self.app.notify("FreeDictate keeps running in the tray",
                             f"Hold {hotkeys.label(self.cfg['hotkey'])} anywhere to dictate.")
-        # A closed window used to be kept hidden with every page and history
-        # card in memory. The app hears this and tears it down instead; the
-        # next open builds it fresh.
+        if not self._disposed:
+            # Hide rather than destroy: building every page on each tray click
+            # was the slow part of opening Settings. Dispose() still tears the
+            # window down when it is replaced (title bar switch, Reset).
+            e.ignore()
+            self.hide()
+            return
         self.closed.emit()
         e.accept()
 
@@ -331,13 +337,16 @@ class SettingsWindow(FluentWindow):
         self.hotkey_edit = HotkeyEdit(cfg["hotkey"])
         reset = button("Reset", "flat")
         reset.setToolTip("Back to Ctrl + Win")
-        row = Row("Dictation shortcut", "Click the box, then press the keys you want. Esc cancels a take while "
-                  "you're recording.", self.hotkey_edit)
+        row = Row("Dictation shortcut", "Click the box, then press the keys you want.", self.hotkey_edit)
         row.controls.addWidget(reset)
         card.add(row)
         self.hotkey_row = row
 
         def set_hotkey(v: str) -> None:
+            if hotkeys.overlaps(v, cfg["cancel_key"]):
+                self.hotkey_edit.set_value(cfg["hotkey"])
+                row.set_note(f"{hotkeys.label(v)} is already the stop key. Pick different keys.")
+                return
             cfg["hotkey"] = v
             row.set_note(hotkeys.warning(v))
             self.refresh_status()
@@ -349,6 +358,27 @@ class SettingsWindow(FluentWindow):
         self.hotkey_edit.recording.connect(recording)
         reset.clicked.connect(lambda: (self.hotkey_edit.set_value("ctrl+win"), set_hotkey("ctrl+win")))
         row.set_note(hotkeys.warning(cfg["hotkey"]))
+
+        self.cancel_edit = HotkeyEdit(cfg["cancel_key"])
+        cancel_reset = button("Reset", "flat")
+        cancel_reset.setToolTip("Back to Esc")
+        cancel_row = Row("Stop key", "Stops a take at any point: while you talk, or while it's being written "
+                         "out. Click the box, then press the key you want.", self.cancel_edit)
+        cancel_row.controls.addWidget(cancel_reset)
+        card.add(cancel_row)
+
+        def set_cancel(v: str) -> None:
+            if hotkeys.overlaps(v, cfg["hotkey"]):
+                self.cancel_edit.set_value(cfg["cancel_key"])
+                cancel_row.set_note(f"{hotkeys.label(v)} is already the dictation shortcut. Pick a different key.")
+                return
+            cfg["cancel_key"] = v
+            cancel_row.set_note(hotkeys.warning(v))
+
+        self.cancel_edit.recorded.connect(set_cancel)
+        self.cancel_edit.recording.connect(recording)
+        cancel_reset.clicked.connect(lambda: (self.cancel_edit.set_value("esc"), set_cancel("esc")))
+        cancel_row.set_note(hotkeys.warning(cfg["cancel_key"]))
 
         mode = Segmented([("hold", "Hold"), ("toggle", "Press to start and stop"), ("both", "Both")], cfg["hotkey_mode"])
         mode_row = Row("How the shortcut works", "", mode)

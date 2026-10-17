@@ -18,6 +18,7 @@ KEYS: dict[str, tuple[str, tuple[int, ...]]] = {
     "shift": ("Shift", (0xA0, 0xA1)), "lshift": ("Left Shift", (0xA0,)), "rshift": ("Right Shift", (0xA1,)),
     "win": ("Win", (0x5B, 0x5C)), "lwin": ("Left Win", (0x5B,)), "rwin": ("Right Win", (0x5C,)),
     "space": ("Space", (0x20,)), "tab": ("Tab", (0x09,)), "capslock": ("Caps Lock", (0x14,)),
+    "esc": ("Esc", (0x1B,)),
     "enter": ("Enter", (0x0D,)), "backspace": ("Backspace", (0x08,)),
     "insert": ("Insert", (0x2D,)), "delete": ("Delete", (0x2E,)), "home": ("Home", (0x24,)),
     "end": ("End", (0x23,)), "pageup": ("Page Up", (0x21,)), "pagedown": ("Page Down", (0x22,)),
@@ -87,6 +88,13 @@ def is_valid(text: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def overlaps(a: str, b: str) -> bool:
+    """True when the two shortcuts share a physical key, so holding one holds the other."""
+    keys_a = {vk for k in parse(a) for vk in KEYS[k][1]}
+    keys_b = {vk for k in parse(b) for vk in KEYS[k][1]}
+    return bool(keys_a & keys_b)
 
 
 def warning(text: str) -> str:
