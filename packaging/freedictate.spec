@@ -26,7 +26,9 @@ a = Analysis(
     pathex=[str(SRC)],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["freedictate.app", "freedictate.ui.settings", "freedictate.ui.overlay", "freedictate.ui.polish"]
+    hiddenimports=["freedictate.app", "freedictate.ui.settings", "freedictate.ui.overlay", "freedictate.ui.polish",
+                   # audio isolation while dictating (ducking/audio import these lazily)
+                   "freedictate.ducking", "pycaw", "pycaw.pycaw", "comtypes", "psutil", "soxr"]
                   + collect_submodules("onnx_asr"),
     excludes=["tkinter", "unittest", "pydoc", "pytest", "IPython", "matplotlib", "PIL", "pynput", "pystray",
               "pyperclip", "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtOpenGL", "PySide6.QtPdf"],
