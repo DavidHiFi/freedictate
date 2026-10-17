@@ -79,6 +79,37 @@ def resolve(name: str) -> int | None:
     return None
 
 
+def _wasapi_native(name: str) -> tuple[int, float, int] | None:
+    """(index, native rate, channels) of the WASAPI input for a stored mic name.
+
+    Exclusive capture must open at the device's own format — shared-mode
+    16 kHz opens fail on many interfaces (paInvalidSampleRate)."""
+    sd = _sd()
+    apis = sd.query_hostapis()
+    wasapi = next((i for i, a in enumerate(apis) if a["name"] == "Windows WASAPI"), None)
+    if wasapi is None:
+        return None
+    if not name:
+        idx = apis[wasapi]["default_input_device"]
+        if idx < 0:
+            return None
+        d = sd.query_devices()[idx]
+        return idx, float(d["default_samplerate"]), int(d["max_input_channels"])
+    want = name.rstrip().lower()
+    matches = []
+    for i, d in enumerate(sd.query_devices()):
+        if d["max_input_channels"] <= 0 or d["hostapi"] != wasapi:
+            continue
+        if "loopback" in d["name"].lower():   # an output's loopback, not a real mic
+            continue
+        if d["name"].lower().startswith(want) or want in d["name"].lower():
+            matches.append((i, d))
+    if not matches:
+        return None
+    i, d = matches[0]
+    return i, float(d["default_samplerate"]), int(d["max_input_channels"])
+
+
 class Recorder:
     """One take at a time. The stream is opened per take so Windows only shows
     the microphone-in-use indicator while you are actually dictating."""
@@ -87,6 +118,7 @@ class Recorder:
         self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._stream = None
+        self._native_rate = RATE   # device rate while capturing exclusively
         self.level = 0.0          # recent RMS, 0..1
         self.peak = 0.0           # loudest sample in the take
         self.started = 0.0
@@ -101,7 +133,20 @@ class Recorder:
         return time.monotonic() - self.started if self.active else 0.0
 
     def _callback(self, indata, frames, t, status):
-        chunk = indata[:, 0].copy()
+        self._accept(indata[:, 0].copy())
+
+    def _exclusive_callback(self, indata, frames, t, status):
+        """Native-format blocks arrive at the device rate; reduce to 16 kHz mono
+        here so the recogniser pipeline never sees the difference."""
+        x = indata.mean(axis=1) if indata.shape[1] > 1 else indata[:, 0]
+        rate = self._native_rate
+        n_out = int(round(len(x) * RATE / rate)) if rate else len(x)
+        if n_out > 0:
+            chunk = np.interp(np.linspace(0.0, len(x) - 1.0, n_out, dtype=np.float64),
+                              np.arange(len(x), dtype=np.float64), x).astype(np.float32)
+            self._accept(chunk)
+
+    def _accept(self, chunk: np.ndarray) -> None:
         rms = float(np.sqrt(np.mean(chunk * chunk))) if len(chunk) else 0.0
         with self._lock:
             self._chunks.append(chunk)
@@ -112,14 +157,32 @@ class Recorder:
         if rms > self.voice_threshold:
             self.last_voice = time.monotonic()
 
-    def start(self, device_name: str) -> None:
+    def start(self, device_name: str, exclusive: bool = False) -> None:
         sd = _sd()
         self.stop()
         with self._lock:
             self._chunks = []
         self.level = self.peak = 0.0
-        stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32",
-                                device=resolve(device_name), callback=self._callback, blocksize=800)
+        if exclusive:
+            native = _wasapi_native(device_name)
+            if native is None:
+                raise RuntimeError("No WASAPI input matches the configured microphone")
+            index, rate, channels = native
+            if channels < 1:
+                channels = 1
+            self._native_rate = rate
+            try:
+                wasapi = sd.WasapiSettings(exclusive=True)
+            except Exception:
+                wasapi = None
+            if wasapi is None:
+                raise RuntimeError("WASAPI exclusive capture is unavailable")
+            stream = sd.InputStream(samplerate=rate, channels=channels, dtype="float32",
+                                    device=index, callback=self._exclusive_callback,
+                                    blocksize=800, extra_settings=wasapi)
+        else:
+            stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32",
+                                    device=resolve(device_name), callback=self._callback, blocksize=800)
         stream.start()
         self._stream = stream
         self.started = self.last_voice = time.monotonic()

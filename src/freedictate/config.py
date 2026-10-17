@@ -35,6 +35,10 @@ DEFAULTS: dict[str, Any] = {
     "auto_submit": False,           # a take ending in "submit" is stripped and Enter is sent
     "ai_tidy": False,               # rewrite each take with a writing model (writer.py)
     "ai_model": "standard",         # light | standard (writer.CATALOG)
+    # privacy while dictating (both apply on the next take)
+    "mic_privacy_while_dictating": False,   # WASAPI exclusive capture: other apps lose the mic until the take ends
+    "isolate_output_while_dictating": False,  # duck or mute every other app's audio until the take ends
+    "isolate_output_level": 0,      # 0 mutes other sessions; 1-100 sets their volume to that percent
     # overlay
     "overlay": True,
     "overlay_position": "bottom",   # bottom | top
@@ -91,7 +95,7 @@ RANGES: dict[str, tuple[float, float]] = {
     "sound_volume": (0, 100), "max_seconds": (10, 3600), "auto_stop_silence": (0, 30),
     "tint": (0, 100), "history_days": (0, 3650), "cpu_threads": (0, 64), "beam_size": (1, 10),
     "min_seconds": (0.1, 5), "silence_peak": (0.0, 0.2), "paste_delay_ms": (0, 1000),
-    "idle_seconds": (0, 3600),
+    "idle_seconds": (0, 3600), "isolate_output_level": (0, 100),
 }
 
 _OLD_BACKDROP = {"Acrylic": "acrylic", "Frosted glass": "acrylic", "Mica": "mica",

@@ -114,7 +114,7 @@ def test_every_slider_fits_its_handle(qapp, env):
     win = open_window(qapp, fresh_cfg(), env)
     try:
         sliders = win.findChildren(QSlider)
-        assert len(sliders) == 4  # sound volume, processor cores, beam size, tint
+        assert len(sliders) == 5  # sound volume, processor cores, beam size, tint, duck level
         for sl in sliders:
             opt = QStyleOptionSlider()
             sl.initStyleOption(opt)
@@ -135,7 +135,7 @@ def test_every_slider_value_fits_its_value_box(qapp, env):
     win = open_window(qapp, fresh_cfg(), env)
     try:
         sliders = win.findChildren(Slider)
-        assert len(sliders) == 4  # sound volume, processor cores, beam size, tint
+        assert len(sliders) == 5  # sound volume, processor cores, beam size, tint, duck level
         for sl in sliders:
             shown = f"{sl.s.value()}{sl.suffix}"
             assert len(shown) <= sl.v.maxLength(), shown
