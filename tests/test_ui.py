@@ -14,7 +14,7 @@ if not os.environ.get("FREEDICTATE_HOME"):
 
 import pytest
 from PySide6.QtCore import QEventLoop, QTimer
-from PySide6.QtWidgets import QApplication, QSlider, QStyle, QStyleOptionSlider
+from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QSlider, QStyle, QStyleOptionSlider
 
 from freedictate import paths
 from freedictate.app import Bus
@@ -140,6 +140,39 @@ def test_every_slider_value_fits_its_value_box(qapp, env):
             shown = f"{sl.s.value()}{sl.suffix}"
             assert len(shown) <= sl.v.maxLength(), shown
             assert sl.v.text() == shown, (sl.v.text(), shown)
+    finally:
+        win.dispose()
+        win.close()
+
+
+def test_processor_cores_slider_counts_physical_cores(qapp, env, monkeypatch):
+    """This PC has 8 cores and 16 threads: the slider stops at 8. A value saved
+    on a bigger PC drops to the most this one has, so the slider and the engine
+    agree."""
+    monkeypatch.setattr(settings_mod, "_cpu_counts", lambda: (8, 16))
+    cfg = fresh_cfg(cpu_threads=12)
+    win = open_window(qapp, cfg, env)
+    try:
+        assert cfg["cpu_threads"] == 8
+        caps = [sl for sl in win.findChildren(Slider) if sl.s.maximum() == 8]
+        assert len(caps) == 1
+        assert caps[0].s.value() == 8 and caps[0].v.text() == "8"
+    finally:
+        win.dispose()
+        win.close()
+
+
+def test_cpu_counts_never_exceed_threads():
+    cores, threads = settings_mod._cpu_counts()
+    assert 1 <= cores <= threads
+
+
+def test_general_tab_has_no_legacy_import(qapp, env):
+    win = open_window(qapp, fresh_cfg(), env)
+    try:
+        shown = [w.text() for w in win.findChildren(QLabel)] + [w.text() for w in win.findChildren(QAbstractButton)]
+        assert not any("FreeDictate 2" in t for t in shown)
+        assert any(t == "Export" for t in shown) and any(t == "Import" for t in shown)
     finally:
         win.dispose()
         win.close()

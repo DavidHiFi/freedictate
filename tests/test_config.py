@@ -77,3 +77,17 @@ def test_export_import_roundtrip(tmp_path):
     b = Config(tmp_path / "b.json")
     assert b.import_from(tmp_path / "export.json") == {"theme", "hotkey"}
     assert b["theme"] == "Dracula"
+
+
+def test_export_import_restores_every_exported_setting(tmp_path):
+    a = Config(tmp_path / "a.json")
+    a.update({"theme": "Dracula", "hotkey": "rctrl", "cpu_threads": 9, "beam_size": 7, "tint": 40,
+              "replacements": [{"find": "teh", "replace": "the"}]})
+    a.export_to(tmp_path / "export.json")
+    exported = json.loads((tmp_path / "export.json").read_text(encoding="utf-8"))
+    assert "window_geometry" not in exported and "first_run_done" not in exported
+    b = Config(tmp_path / "b.json")
+    b.import_from(tmp_path / "export.json")
+    for key, value in exported.items():
+        if key in DEFAULTS:
+            assert b[key] == value, key

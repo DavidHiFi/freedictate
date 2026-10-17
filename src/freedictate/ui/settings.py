@@ -40,6 +40,18 @@ def _mb(n: int) -> str:
     return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
 
 
+def _cpu_counts() -> tuple[int, int]:
+    """(physical cores, logical threads) of this PC. Cores fall back to the
+    thread count when psutil is missing or the OS won't report them."""
+    threads = os.cpu_count() or 8
+    try:
+        import psutil
+        cores = psutil.cpu_count(logical=False) or threads
+    except Exception:
+        cores = threads
+    return max(1, min(cores, threads)), threads
+
+
 class Page(QScrollArea):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
@@ -616,11 +628,15 @@ class SettingsWindow(FluentWindow):
         beam = Slider(1, 10, self.cfg["beam_size"], "", width=160)
         beam.changed.connect(lambda v: self.cfg.update({"beam_size": v}))
         card.add(Row("Search width", "Higher is slightly more accurate and slower. 5 is standard.", beam))
-        cores = os.cpu_count() or 8
-        limit = Toggle(self.cfg["cpu_threads"] > 0)
-        cap = Slider(1, cores, self.cfg["cpu_threads"] or min(6, cores), "", width=180)
+        cores, threads = _cpu_counts()
+        saved = self.cfg["cpu_threads"]
+        if saved > cores:      # saved on a PC with more cores; keep the slider and the engine in step
+            self.cfg.update({"cpu_threads": cores})
+            saved = cores
+        limit = Toggle(saved > 0)
+        cap = Slider(1, cores, saved or min(6, cores), "", width=180)
         cap.changed.connect(lambda v: self.cfg.update({"cpu_threads": v}))
-        cap_row = Row("Processor cores", f"This PC reports {cores} threads. "
+        cap_row = Row("Processor cores", f"This PC has {cores} cores and {threads} threads. "
                       "Dictation waits longer for your words the lower this is.", cap)
         limit.toggled.connect(lambda on: (
             self.cfg.update({"cpu_threads": (self.cfg["cpu_threads"] or min(6, cores)) if on else 0}),
@@ -1434,10 +1450,6 @@ class SettingsWindow(FluentWindow):
         reset = button("Reset", "danger")
         reset.clicked.connect(self._reset_settings)
         card.add(Row("Reset all settings", "History and downloaded models are kept.", reset))
-        old = button("Import from FreeDictate 2", "", icon="file")
-        old.clicked.connect(self._import_v2)
-        card.add(Row("Coming from FreeDictate 2?",
-                     "Point this at your old FreeDictate folder to bring over its settings and history.", old))
 
     @Slot(str, object)
     def _on_update_status(self, msg: str, rel) -> None:
@@ -1489,37 +1501,6 @@ class SettingsWindow(FluentWindow):
             QMessageBox.warning(self, "Import settings", f"That file couldn't be read: {e}")
             return
         self._rebuild()
-
-    def _import_v2(self) -> None:
-        """Pull settings and history out of a v1/v2 FreeDictate folder
-        (config.json and transcripts.log next to freedictate.py)."""
-        folder = QFileDialog.getExistingDirectory(self, "Choose your old FreeDictate folder")
-        if not folder:
-            return
-        old = Path(folder)
-        notes = []
-        cfg_file = old / "config.json"
-        if cfg_file.exists():
-            try:
-                self.cfg.import_from(cfg_file)
-                notes.append("settings imported")
-            except Exception as e:
-                notes.append(f"settings not readable ({e})")
-        log_file = old / "transcripts.log"
-        if log_file.exists():
-            try:
-                n = self.history.import_legacy_log(log_file)
-                notes.append(f"{n} dictations added to history")
-            except Exception as e:
-                notes.append(f"history not readable ({e})")
-        if not notes:
-            QMessageBox.information(self, "Import from FreeDictate 2",
-                                    "No config.json or transcripts.log in that folder.")
-            return
-        if "settings imported" in notes:
-            self._rebuild()
-            self.reload_history()
-        QMessageBox.information(self, "Import from FreeDictate 2", "; ".join(notes).capitalize() + ".")
 
     def _reset_settings(self) -> None:
         if QMessageBox.question(self, "Reset settings", "Put every setting back to its default?") \
