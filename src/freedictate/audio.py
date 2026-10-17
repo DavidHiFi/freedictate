@@ -79,32 +79,117 @@ def resolve(name: str) -> int | None:
     return None
 
 
-def _wasapi_native(name: str) -> tuple[int, float, int] | None:
-    """(index, native rate, channels) of the WASAPI input for a stored mic name.
+MME_NAME_MAX = 31   # MME (waveIn) device names are cut to 31 characters
 
-    Exclusive capture must open at the device's own format — shared-mode
-    16 kHz opens fail on many interfaces (paInvalidSampleRate)."""
+
+def _wavein_endpoints() -> list[tuple[str, str]]:
+    """[(MME name, Core Audio endpoint ID)] for every waveIn device, in waveIn
+    order. The endpoint ID is the host-API-independent identity of the
+    physical input (DRV_QUERYFUNCTIONINSTANCEID). Empty on failure."""
+    import ctypes
+    from ctypes import wintypes
+
+    class WAVEINCAPSW(ctypes.Structure):
+        _fields_ = [("wMid", wintypes.WORD), ("wPid", wintypes.WORD), ("vDriverVersion", ctypes.c_uint),
+                    ("szPname", ctypes.c_wchar * 32), ("dwFormats", wintypes.DWORD),
+                    ("wChannels", wintypes.WORD), ("wReserved1", wintypes.WORD)]
+
+    DRV_QUERYFUNCTIONINSTANCEID = 0x0800 + 17
+    DRV_QUERYFUNCTIONINSTANCEIDSIZE = 0x0800 + 18
+    try:
+        winmm = ctypes.WinDLL("winmm")
+        winmm.waveInGetNumDevs.restype = ctypes.c_uint
+        winmm.waveInGetDevCapsW.argtypes = [ctypes.c_size_t, ctypes.c_void_p, ctypes.c_uint]
+        winmm.waveInGetDevCapsW.restype = ctypes.c_uint
+        winmm.waveInMessage.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+        winmm.waveInMessage.restype = ctypes.c_uint
+        out = []
+        for i in range(winmm.waveInGetNumDevs()):
+            caps = WAVEINCAPSW()
+            if winmm.waveInGetDevCapsW(i, ctypes.byref(caps), ctypes.sizeof(caps)) != 0:
+                return []
+            size = ctypes.c_size_t(0)
+            if winmm.waveInMessage(ctypes.c_void_p(i), DRV_QUERYFUNCTIONINSTANCEIDSIZE, ctypes.byref(size), None) != 0:
+                return []
+            buf = ctypes.create_unicode_buffer(size.value // 2 + 1)
+            if winmm.waveInMessage(ctypes.c_void_p(i), DRV_QUERYFUNCTIONINSTANCEID, buf,
+                                   ctypes.c_void_p(size.value)) != 0:
+                return []
+            out.append((caps.szPname, buf.value))
+        return out
+    except Exception:
+        log.debug("waveIn endpoint query failed", exc_info=True)
+        return []
+
+
+def _endpoint_names() -> dict[str, str]:
+    """{endpoint ID: full friendly name} for capture endpoints. The friendly
+    name is what PortAudio's WASAPI host API shows. Empty on failure."""
+    try:
+        import comtypes
+        try:
+            comtypes.CoInitialize()
+        except OSError:
+            pass   # already initialised in another apartment model on this thread
+        from pycaw.constants import DEVICE_STATE, EDataFlow
+        from pycaw.pycaw import AudioUtilities
+        return {d.id: d.FriendlyName for d in
+                AudioUtilities.GetAllDevices(EDataFlow.eCapture.value, DEVICE_STATE.ACTIVE.value)
+                if d.id and d.FriendlyName}
+    except Exception:
+        log.debug("Capture endpoint names unavailable", exc_info=True)
+        return {}
+
+
+def _full_name(mme_index: int) -> str | None:
+    """Full friendly name of the physical device behind a PortAudio MME input,
+    through its endpoint ID; None when Windows can't say."""
+    sd = _sd()
+    devices = sd.query_devices()
+    name = devices[mme_index]["name"]
+    mme = devices[mme_index]["hostapi"]
+    # The k-th MME device with this name is the k-th waveIn device with it.
+    ordinal = sum(1 for i, d in enumerate(devices[:mme_index])
+                  if d["hostapi"] == mme and d["name"] == name)
+    ids = [eid for pname, eid in _wavein_endpoints() if pname == name]
+    if ordinal >= len(ids):
+        return None
+    return _endpoint_names().get(ids[ordinal])
+
+
+def _wasapi_native(name: str) -> tuple[int, float, int] | None:
+    """(index, native rate, channels) of the WASAPI input that is the same
+    physical device as the MME input shared capture would open.
+
+    Exclusive capture must open at the device's own format; shared-mode
+    16 kHz opens fail on many interfaces (paInvalidSampleRate). With no
+    device configured this follows the MME default, not WASAPI's own
+    default, so both modes record the same microphone. When the device
+    can't be identified exactly this returns None and the take falls back
+    to shared capture rather than open the wrong microphone."""
     sd = _sd()
     apis = sd.query_hostapis()
     wasapi = next((i for i, a in enumerate(apis) if a["name"] == "Windows WASAPI"), None)
-    if wasapi is None:
+    mme = next((i for i, a in enumerate(apis) if a["name"] == "MME"), None)
+    if wasapi is None or mme is None:
         return None
-    if not name:
-        idx = apis[wasapi]["default_input_device"]
-        if idx < 0:
-            return None
-        d = sd.query_devices()[idx]
-        return idx, float(d["default_samplerate"]), int(d["max_input_channels"])
-    want = name.rstrip().lower()
-    matches = []
-    for i, d in enumerate(sd.query_devices()):
-        if d["max_input_channels"] <= 0 or d["hostapi"] != wasapi:
-            continue
-        if "loopback" in d["name"].lower():   # an output's loopback, not a real mic
-            continue
-        if d["name"].lower().startswith(want) or want in d["name"].lower():
-            matches.append((i, d))
-    if not matches:
+    mme_index = resolve(name) if name else apis[mme]["default_input_device"]
+    if mme_index is None or mme_index < 0:
+        return None
+    devices = sd.query_devices()
+    mme_name = devices[mme_index]["name"].rstrip()
+    inputs = [(i, d) for i, d in enumerate(devices)
+              if d["hostapi"] == wasapi and d["max_input_channels"] > 0
+              and not d["name"].rstrip().endswith("[Loopback]")]   # an output's loopback, not a mic
+    full = _full_name(mme_index)
+    if full:
+        matches = [(i, d) for i, d in inputs if d["name"].rstrip() == full.rstrip()]
+    elif len(devices[mme_index]["name"]) < MME_NAME_MAX:
+        matches = [(i, d) for i, d in inputs if d["name"].rstrip() == mme_name]
+    else:
+        matches = [(i, d) for i, d in inputs if d["name"].startswith(mme_name)]
+    if len(matches) != 1:
+        log.warning("No unique WASAPI input for microphone %r (%d candidates)", mme_name, len(matches))
         return None
     i, d = matches[0]
     return i, float(d["default_samplerate"]), int(d["max_input_channels"])
