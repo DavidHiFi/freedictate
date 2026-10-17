@@ -101,6 +101,12 @@ def _expected_sha(rel: Release, name: str) -> str | None:
 
 def download(rel: Release, progress: Callable[[int, int], None] | None = None) -> Path:
     name, url = _asset(rel, paths.portable())
+    # Read the checksum before fetching the file. A download nobody can verify
+    # is never saved, let alone installed.
+    want = _expected_sha(rel, name)
+    if not want:
+        raise RuntimeError("This release has no checksum for the download, so it wasn't fetched. "
+                           "Open the release page instead.")
     target = Path(tempfile.gettempdir()) / "FreeDictate-update" / name
     target.parent.mkdir(parents=True, exist_ok=True)
     sha = hashlib.sha256()
@@ -113,12 +119,9 @@ def download(rel: Release, progress: Callable[[int, int], None] | None = None) -
             done += len(chunk)
             if progress:
                 progress(done, total)
-    want = _expected_sha(rel, name)
-    if want and sha.hexdigest() != want:
+    if sha.hexdigest() != want:
         target.unlink(missing_ok=True)
         raise RuntimeError("The download didn't match its checksum, so it wasn't installed. Try again.")
-    if not want:
-        log.warning("Release %s has no SHA256SUMS entry for %s", rel.tag, name)
     return target
 
 

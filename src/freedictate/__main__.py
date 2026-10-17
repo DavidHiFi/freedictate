@@ -124,6 +124,18 @@ def _self_test(target: str) -> int:
     step("parakeet runtime", parakeet)
     step("sounddevice", lambda: f"{len(__import__('sounddevice').query_devices())} audio devices")
 
+    def audio_sessions():
+        # Output isolation drives pycaw through comtypes. Both generate code at
+        # runtime, which PyInstaller can't bundle, so only a live call proves them.
+        import comtypes
+        from pycaw.pycaw import AudioUtilities
+        comtypes.CoInitialize()
+        try:
+            return f"{len(AudioUtilities.GetAllSessions())} audio sessions"
+        finally:
+            comtypes.CoUninitialize()
+    step("output isolation (pycaw, comtypes)", audio_sessions)
+
     def qt():
         from PySide6.QtGui import QGuiApplication
         from PySide6.QtSvg import QSvgRenderer  # noqa: F401
