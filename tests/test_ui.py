@@ -231,6 +231,53 @@ def test_caption_matches_tinted_body_with_windows_titlebar(qapp, env, monkeypatc
         pump(qapp, 2)
 
 
+def test_caption_text_dims_when_window_inactive(qapp, env, monkeypatch):
+    """A caption title colour set with DWMWA_TEXT_COLOR is drawn verbatim, so
+    DWM never dims it and the app has to: active keeps pal.text, inactive
+    blends pal.text ~0.40 toward the caption background (DWM's own inactive
+    caption text is its default blended 0.40 toward the caption colour,
+    measured on build 26200). The background is the measured material tone for
+    a tinted material and pal.bg for a solid or zero-tint caption."""
+    calls, measured = [], []
+    monkeypatch.setattr(native, "set_caption", lambda h, c, t: calls.append((c, t)))
+    monkeypatch.setattr(native, "visible_rect", lambda h: (0, 100, 800, 500))
+    monkeypatch.setattr(native, "client_origin", lambda h: (0, 131))  # caption is 31px
+    monkeypatch.setattr(native, "screen_patch_median", lambda rect: measured.append(rect) or (73, 76, 95))
+
+    win = FluentWindow("caption-text-test", native_titlebar=True)
+    monkeypatch.setattr(native, "point_window", lambda x, y: win.hwnd())
+    win.show()
+    pump(qapp, 2)
+    pal = theme.current()
+    mix = theme.mix
+    try:
+        win._backdrop, win._tint = "acrylic", 0.75
+        win._apply_caption()                 # schedules the deferred measurement
+        win._measure_caption_tone()          # run it inline
+        assert len(measured) == 1
+        tone = mix("#494c5f", pal.bg, 0.75)  # tint over the stubbed strip median
+
+        monkeypatch.setattr(win, "isActiveWindow", lambda: True)
+        win._apply_caption()
+        assert calls[-1] == (tone, pal.text), "active caption text is the palette text"
+
+        monkeypatch.setattr(win, "isActiveWindow", lambda: False)
+        win._apply_caption()
+        assert calls[-1] == (tone, mix(tone, pal.text, 0.40)), "inactive dims toward the caption colour"
+
+        win._backdrop = "solid"              # solid body: the caption is pal.bg
+        win._apply_caption()
+        assert calls[-1] == (pal.bg, mix(pal.bg, pal.text, 0.40))
+
+        # let the deferred measurement timer from the first pass fire safely
+        loop = QEventLoop()
+        QTimer.singleShot(800, loop.quit)
+        loop.exec()
+    finally:
+        win.deleteLater()
+        pump(qapp, 2)
+
+
 def test_history_reloads_deferred_and_reuses_cards(qapp, env):
     counter = {"n": 0}
     orig = settings_mod.HistoryItem

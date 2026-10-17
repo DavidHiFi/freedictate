@@ -26,6 +26,14 @@ from . import icons, native, theme
 TITLE_H = 40
 CAPTION_W = 46
 
+# A caption title colour set with DWMWA_TEXT_COLOR is drawn verbatim, so DWM
+# never dims it on its own (measured: a set #ff0000 stayed #ff0000 on the
+# inactive caption). Windows' own inactive caption text is DWM's default blended
+# 0.396-0.399 per channel toward the caption colour (measured against DWM's
+# inactive default caption on build 26200), so the themed colour is dimmed by
+# that much when the Windows title bar is inactive.
+INACTIVE_TEXT_MIX = 0.40
+
 # Segoe Fluent Icons (Windows 11) or Segoe MDL2 Assets (Windows 10): the glyphs
 # Windows draws on its own caption buttons.
 _GLYPHS = {"minimize": "", "maximize": "", "restore": "", "close": ""}
@@ -195,10 +203,12 @@ class FluentWindow(QWidget):
         h = self.hwnd()
         if self._backdrop == "solid" or self._tint >= 1.0:
             # The body paints pal.bg opaque, so the caption is exactly that.
-            native.set_caption(h, pal.bg, pal.text)
+            native.set_caption(h, pal.bg, self._caption_text(pal, pal.bg))
             return
         if self._tint <= 0.0:
-            native.set_caption(h, None, pal.text)
+            # The strip shows the raw material; dim the text toward pal.bg as a
+            # stand-in for the material tone it sits on.
+            native.set_caption(h, None, self._caption_text(pal, pal.bg))
             return
         # A material runs under the caption raw, while the body gets the tint
         # over it — the caption looked lighter than the window (measured: up to
@@ -206,7 +216,17 @@ class FluentWindow(QWidget):
         # it the tint composed over the material tone measured off the strip.
         # DWMWA_CAPTION_COLOR does not read back on current builds; the tone
         # comes from a screen grab instead, cached per material and dark mode.
-        native.set_caption(h, self._caption_tone(pal), pal.text)
+        tone = self._caption_tone(pal)
+        native.set_caption(h, tone, self._caption_text(pal, tone or pal.bg))
+
+    def _caption_text(self, pal, color: str) -> str:
+        """The caption title colour for the current activation state: pal.text
+        focused, DWM's inactive blend of it (toward the caption colour) when
+        not. The blend has to be computed here because DWM draws a colour set
+        with DWMWA_TEXT_COLOR verbatim."""
+        if self.isActiveWindow():
+            return pal.text
+        return theme.mix(color, pal.text, INACTIVE_TEXT_MIX)
 
     def _caption_tone(self, pal) -> str | None:
         """Tint composed over the measured material tone, or None until the
@@ -222,7 +242,7 @@ class FluentWindow(QWidget):
         if self._cap_measuring:
             return
         self._cap_measuring = True
-        native.set_caption(self.hwnd(), None, theme.current().text)  # raw material in the strip
+        native.set_caption(self.hwnd(), None, self._caption_text(theme.current(), theme.current().bg))  # raw material in the strip
         # A DWM backdrop switch animates for a few hundred ms; measure after it.
         QTimer.singleShot(600, self._measure_caption_tone)
 
@@ -340,9 +360,13 @@ class FluentWindow(QWidget):
         except (TypeError, ValueError):
             return False, 0
         m = msg.message
-        if m == native.WM_NCACTIVATE and self._keep_active and self._backdrop != "solid":
+        if m == native.WM_NCACTIVATE and self._keep_active and self._backdrop != "solid" and not self._native_tb:
             # Report "active" to the frame so DWM keeps the material instead of
             # switching to its flat inactive colour. Focus handling is unchanged.
+            # Frameless windows only: with the Windows title bar the real state
+            # has to reach DefWindowProc so DWM dims its own caption buttons,
+            # and the re-asserted caption colour (see _apply_caption) keeps the
+            # material tone instead.
             return True, native.user32.DefWindowProcW(msg.hWnd, m, 1, -1)
         if self._native_tb:
             return False, 0
