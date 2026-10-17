@@ -119,6 +119,7 @@ class Recorder:
         self._lock = threading.Lock()
         self._stream = None
         self._native_rate = RATE   # device rate while capturing exclusively
+        self._resampler = None     # soxr stream: native rate -> 16 kHz, state carried across blocks
         self.level = 0.0          # recent RMS, 0..1
         self.peak = 0.0           # loudest sample in the take
         self.started = 0.0
@@ -137,14 +138,30 @@ class Recorder:
 
     def _exclusive_callback(self, indata, frames, t, status):
         """Native-format blocks arrive at the device rate; reduce to 16 kHz mono
-        here so the recogniser pipeline never sees the difference."""
+        here so the recogniser pipeline never sees the difference. One
+        streaming resampler carries its filter state across blocks: it
+        low-pass filters before decimating (no aliasing) and loses no samples
+        at block edges (no drift)."""
         x = indata.mean(axis=1) if indata.shape[1] > 1 else indata[:, 0]
-        rate = self._native_rate
-        n_out = int(round(len(x) * RATE / rate)) if rate else len(x)
-        if n_out > 0:
-            chunk = np.interp(np.linspace(0.0, len(x) - 1.0, n_out, dtype=np.float64),
-                              np.arange(len(x), dtype=np.float64), x).astype(np.float32)
+        rs = self._resampler
+        if rs is None:
+            self._accept(np.ascontiguousarray(x, dtype=np.float32))
+            return
+        chunk = rs.resample_chunk(np.ascontiguousarray(x, dtype=np.float32))
+        if len(chunk):
             self._accept(chunk)
+
+    def _flush_resampler(self) -> None:
+        rs, self._resampler = self._resampler, None
+        if rs is not None:
+            try:
+                tail = rs.resample_chunk(np.zeros(0, dtype=np.float32), last=True)
+            except Exception:
+                log.debug("Resampler flush failed", exc_info=True)
+                return
+            if len(tail):
+                with self._lock:
+                    self._chunks.append(tail)
 
     def _accept(self, chunk: np.ndarray) -> None:
         rms = float(np.sqrt(np.mean(chunk * chunk))) if len(chunk) else 0.0
@@ -171,6 +188,10 @@ class Recorder:
             if channels < 1:
                 channels = 1
             self._native_rate = rate
+            self._resampler = None
+            if int(round(rate)) != RATE:
+                import soxr
+                self._resampler = soxr.ResampleStream(rate, RATE, 1, dtype="float32", quality="HQ")
             try:
                 wasapi = sd.WasapiSettings(exclusive=True)
             except Exception:
@@ -195,6 +216,7 @@ class Recorder:
                 stream.close()
             except Exception:
                 log.debug("Closing the input stream failed", exc_info=True)
+        self._flush_resampler()   # the callback has stopped; emit the filter's tail
         with self._lock:
             chunks, self._chunks = self._chunks, []
         self.level = 0.0

@@ -12,3 +12,4 @@ PySide6-Essentials==6.12.0
 pycaw==20260927          # output isolation while dictating (Windows Core Audio)
 comtypes==1.4.17
 psutil==7.2.2
+soxr==1.1.0              # exclusive-capture resampling to 16 kHz
