@@ -39,7 +39,7 @@ DEFAULTS: dict[str, Any] = {
     # privacy while dictating (both apply on the next take)
     "mic_privacy_while_dictating": False,   # WASAPI exclusive capture: other apps lose the mic until the take ends
     "isolate_output_while_dictating": False,  # duck or mute every other app's audio until the take ends
-    "isolate_output_level": 0,      # 0 mutes other sessions; 1-100 sets their volume to that percent
+    "isolate_output_level": 0,      # 0 mutes other apps; 25 or 50 turns their sound down to that percent
     # overlay
     "overlay": True,
     "overlay_position": "bottom",   # bottom | top
@@ -103,6 +103,17 @@ _OLD_BACKDROP = {"Acrylic": "acrylic", "Frosted glass": "acrylic", "Mica": "mica
                  "Mica Alt": "mica_alt", "Light acrylic": "mica", "Solid": "solid"}
 
 
+QUIET_STEPS = (0, 25, 50)   # the levels other apps' sound can be set to while dictating
+
+
+def _quiet_step(value: float) -> int:
+    """Snap to a level the Settings page offers. 100 used to mean "no change",
+    so a switched-on setting silently did nothing; it now means mute."""
+    if value >= 100:
+        return 0
+    return min(QUIET_STEPS, key=lambda step: abs(step - value))
+
+
 def _coerce(key: str, value: Any) -> Any:
     default = DEFAULTS[key]
     if isinstance(default, bool):
@@ -121,6 +132,8 @@ def _coerce(key: str, value: Any) -> Any:
         if key in RANGES:
             lo, hi = RANGES[key]
             value = type(default)(min(max(value, lo), hi))
+        if key == "isolate_output_level":
+            value = _quiet_step(value)
         return value
     if isinstance(default, str):
         value = str(value)

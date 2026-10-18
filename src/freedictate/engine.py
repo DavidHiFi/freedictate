@@ -480,7 +480,7 @@ class Engine:
                     self._privacy_warned = True
                     self.emit("notice", {
                         "title": "Mic privacy isn't active",
-                        "text": "The microphone couldn't be captured exclusively this time. "
+                        "text": "Keeping the mic private didn't work this time. "
                                 "Other apps may hear you until this take ends.",
                     })
                 self.recorder.start(self.cfg["input_device"])

@@ -80,9 +80,11 @@ def test_new_settings_are_validated():
         assert c["isolate_output_while_dictating"] is False
         assert c["isolate_output_level"] == 0
         c.update({"isolate_output_level": 500})
-        assert c["isolate_output_level"] == 100
+        assert c["isolate_output_level"] == 0      # 100 meant "no change": a switched-on setting that did nothing
         c.update({"isolate_output_level": "37"})
-        assert c["isolate_output_level"] == 37
+        assert c["isolate_output_level"] == 25     # snaps to the nearest step the Settings page offers
+        c.update({"isolate_output_level": 50})
+        assert c["isolate_output_level"] == 50
 
 
 def test_start_mutes_everything_but_ours_and_writes_a_record(worker):

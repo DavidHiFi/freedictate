@@ -453,28 +453,26 @@ class SettingsWindow(FluentWindow):
         longest.currentIndexChanged.connect(lambda _: cfg.update({"max_seconds": int(longest.value())}))
         card.add(Row("Longest take", "A take this long finishes by itself.", longest))
 
-        card = page.section("Privacy while dictating",
-                            "Both settings switch in when a take starts and back out when it ends.")
+        card = page.section("While I dictate",
+                            "These switch on when a take starts and back off when it ends.")
         privacy = Toggle(cfg["mic_privacy_while_dictating"])
         privacy.toggled.connect(lambda on: cfg.update({"mic_privacy_while_dictating": on}))
-        card.add(Row("Keep the microphone private",
-                     "Captures the mic exclusively while you dictate, so other apps "
-                     "(e.g. a call) lose it until you stop. They reconnect automatically. "
-                     "Falls back to normal capture if exclusive mode is unavailable.",
+        card.add(Row("Keep my mic private",
+                     "Other apps, like calls, can't use the mic while I dictate. "
+                     "If the mic is busy, dictation still works and they keep it.",
                      privacy))
         isolate = Toggle(cfg["isolate_output_while_dictating"])
-        duck = Slider(0, 100, cfg["isolate_output_level"], "%")
-        duck.setEnabled(isolate.isChecked())
-        duck.changed.connect(lambda v: cfg.update({"isolate_output_level": v}))
+        quiet = Combo([("0", "Go silent"), ("25", "Drop to 25% volume"), ("50", "Drop to 50% volume")],
+                      str(cfg["isolate_output_level"]), width=200)
+        quiet.setEnabled(isolate.isChecked())
+        quiet.currentIndexChanged.connect(lambda _: cfg.update({"isolate_output_level": int(quiet.value())}))
         isolate.toggled.connect(lambda on: (cfg.update({"isolate_output_while_dictating": on}),
-                                            duck.setEnabled(on)))
-        card.add(Row("Silence other apps' audio",
-                     "Mutes or ducks every other app's playback while you dictate and "
-                     "restores it exactly afterwards. Free Dictate's own sounds stay on.",
+                                            quiet.setEnabled(on)))
+        card.add(Row("Mute other apps' sound",
+                     "Other apps go quiet while I dictate and come back when I stop. "
+                     "Free Dictate's beeps still play.",
                      isolate))
-        duck_row = Row("Duck level", "0 mutes other apps completely; a higher value leaves "
-                       "them playing quietly.", duck)
-        card.add(duck_row)
+        card.add(Row("What other apps do", "Only applies while the row above is on.", quiet))
 
         card = page.section("Feedback")
         sounds = Toggle(cfg["sounds"])

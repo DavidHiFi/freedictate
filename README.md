@@ -65,7 +65,7 @@ Extract the zip wherever you like, a USB stick works, and run `FreeDictate.exe`.
 
 Everything lives in one window with seven pages:
 
-- **Dictation**: hotkey and mode, microphone with a live level test, sounds (start, stop, and a tone when the text arrives) and volume, auto-stop on silence for press-to-start takes, vocabulary hints passed to the model, pause, mic exclusivity and audio ducking for privacy while a take runs.
+- **Dictation**: hotkey and mode, microphone with a live level test, sounds (start, stop, and a tone when the text arrives) and volume, auto-stop on silence for press-to-start takes, vocabulary hints passed to the model, pause, keeping other apps off the mic while a take runs, and muting or turning down other apps' sound during a take.
 - **Speech model**: pick a model, from Whisper *Tiny* (75 MB, fastest) to *Large v3*, or NVIDIA's *Parakeet v3* for English and 2 more languages by CPU design. CPU or NVIDIA GPU. One list picks the model; a second deletes models you no longer use; *Verify model files* re-checks each byte against the manifest. A fallback model keeps dictation working while a new one downloads.
 - **Text and pasting**: filler removal, repeated-word removal ("the the" becomes "the"), capitalization, end punctuation, spoken punctuation and lists ("comma", "full stop", "question mark", "hyphen", "open bracket", "dot point", "new line", "new paragraph"; say "literal" first to type the word), an optional AI tidy-up, find-and-replace rules, "submit" ending a take with Enter, output method (paste / Shift+Insert / type / clipboard only) and clipboard restore.
 - **Appearance**. Ten themes plus *Match Windows*, the Windows accent colour, any installed font, and the window material: **Mica Alt, Mica, Acrylic, Blur** or solid, with a tint slider. Every slider has a value box you can type a number into. Backdrops need Windows 11 22H2 and transparency turned on; otherwise you get the solid look automatically. The title bar can be FreeDictate's own or the standard Windows one; with the Windows title bar the material runs under it and the tint covers the body.
@@ -181,7 +181,7 @@ Thank you to everyone using FreeDictate, reporting bugs and sending fixes.
 | **Qt project** ([Qt for Python](https://pypi.org/project/PySide6/)) | The toolkit behind every window, tray icon and page |
 | **sounddevice** ([python-sounddevice](https://github.com/spatialaudio/python-sounddevice)) | Microphone capture, over [PortAudio](http://www.portaudio.com/) |
 | **PyAV** ([PyAV](https://github.com/PyAV-Org/PyAV)) | Reads audio and video files so History can transcribe them |
-| **pycaw** ([pycaw](https://github.com/AndreMiras/pycaw)) | Windows Core Audio for output isolation and per-app ducking, over [comtypes](https://github.com/enthought/comtypes) |
+| **pycaw** ([pycaw](https://github.com/AndreMiras/pycaw)) | Windows audio controls that mute or turn down other apps while you dictate, over [comtypes](https://github.com/enthought/comtypes) |
 | **dofuuz** ([python-soxr](https://github.com/dofuuz/python-soxr)) | Resamples every capture down to 16 kHz for the models |
 | **psutil** ([psutil](https://github.com/giampaolo/psutil)) | Core and thread counts behind the CPU limit slider |
 
