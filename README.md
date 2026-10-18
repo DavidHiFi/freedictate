@@ -58,7 +58,10 @@ The **stop key** (Esc by default, changeable in Settings) drops a take at any po
 
 Extract the zip wherever you like, a USB stick works, and run `FreeDictate.exe`. A `portable.txt` marker next to the exe tells FreeDictate to keep everything (settings, history, downloaded models) in a `data\` folder beside it, so the whole folder moves with you and nothing is written to the registry or AppData. The portable build can update itself the same way, keeping your `data\` folder.
 
-## Settings
+<details>
+<summary><b>Settings, page by page</b></summary>
+
+<br>
 
 Everything lives in one window with seven pages:
 
@@ -70,7 +73,12 @@ Everything lives in one window with seven pages:
 - **General**. Start at login (normal or elevated), update settings, prerelease channel, export/import settings.
 - **About**. Version, licences, links.
 
-## Models
+</details>
+
+<details>
+<summary><b>Speech models and accuracy</b></summary>
+
+<br>
 
 | Model | Size | Good for |
 | --- | --- | --- |
@@ -95,11 +103,18 @@ Accuracy, measured on 30 LibriSpeech clips and 21 accented clips (Scottish, Iris
 | Large v3 (GPU) | 4.2% | 10.2% |
 | Distil Large v3.5 (GPU) | 5.1% | 10.9% |
 
-## AI tidy-up
+</details>
+
+<details>
+<summary><b>AI tidy-up (optional)</b></summary>
+
+<br>
 
 Optional, under *Text and pasting*. A small writing model on your PC removes stumbles, false starts and repeats, and punctuates run-on takes, keeping your words and their order. If the answer drops much of what you said, changes a number, or reads like a reply rather than your words, FreeDictate pastes the plain transcript instead.
 
 FreeDictate runs the model itself with [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT licence). Settings downloads the engine (32 MB, checked against a pinned SHA-256) together with one of two models: *Light* (1.1 GB, for graphics cards under 6 GB) or *Standard* (2.5 GB, about a second per take on a recent card). It needs a graphics card from any maker; on the processor alone a clean-up takes about 11 seconds, so the setting says so and stays off. The writing model loads only for takes that need it and leaves graphics memory after a few minutes without one (5 by default, adjustable under *Speech model › Memory*).
+
+</details>
 
 ## Privacy
 
@@ -157,6 +172,7 @@ Thank you to everyone using FreeDictate, reporting bugs and sending fixes.
 
 | Who | What |
 | --- | --- |
+| **OpenAI** ([Whisper](https://github.com/openai/whisper)) | The Whisper speech models, from Tiny to Large v3 |
 | **SYSTRAN** ([faster-whisper](https://github.com/SYSTRAN/faster-whisper)) | The Whisper runtime that transcribes the Whisper models, on its [CTranslate2](https://github.com/OpenNMT/CTranslate2) engine |
 | **NVIDIA** ([Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)) | The Parakeet v2 and v3 speech models, loaded with [onnx-asr](https://github.com/istupakov/onnx-asr) |
 | **VoxType** ([peteonrails/voxtype](https://github.com/peteonrails/voxtype)) | Text-processing details the options mirror: filler removal, punctuation spacing and the "submit" auto-submit |
@@ -175,4 +191,11 @@ Built on [Python](https://www.python.org/), with [PyInstaller](https://pyinstall
 
 ## Disclaimers
 
-Most of this code was written with AI coding agents. The commit history credits Claude Opus 5.5 and Claude Haiku 5.5, and a change only reached a release after the owner reviewed it. The optional AI tidy-up is a feature you turn on in Settings, not who wrote the program.
+Most of this project's code was developed with AI coding agents, mainly Claude Code. No single AI agent made the project, and every change was tested before it shipped in a release.
+
+The optional AI tidy-up is a feature that runs on your own PC. It is off until you turn it on.
+
+<div align="center">
+<br>
+<sub>Not affiliated with OpenAI, NVIDIA or Wispr. Requires 64-bit Windows 10 1809 or later; the window materials need Windows 11 22H2.</sub>
+</div>
