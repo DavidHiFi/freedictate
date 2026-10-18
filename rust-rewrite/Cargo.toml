@@ -1,0 +1,7 @@
+[package]
+name = "freedictate-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# cpal, rodio, windows-rs, serde, serde_json, tokio, whisper-rs, iced or tauri

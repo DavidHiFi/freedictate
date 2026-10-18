@@ -25,3 +25,7 @@ data/
 build/
 dist/
 *.spec.bak
+
+# Rust rewrite build output
+rust-rewrite/target/
+Cargo.lock
