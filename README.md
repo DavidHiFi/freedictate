@@ -137,14 +137,6 @@ runs the test suite, freezes the app with PyInstaller, self-tests the frozen exe
 
 </details>
 
----
-
-## Support development
-
-FreeDictate is free, offline and ad-free, and stays that way. If it saves you typing every day, a coffee keeps it moving.
-
-[![Support DavidHiFi on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/davidhifi)
-
 ## Contributing
 
 Bug reports with a log file from *General › Your data*, feature ideas and pull requests are all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks and what to include.
