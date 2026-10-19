@@ -17,9 +17,13 @@ This is the live build log for finishing the Rust rewrite. Update it as steps la
 
 Main agent owns Cargo.toml, lib.rs, main.rs, config, output, ducking, tests/test_privacy_options.rs and all commits.
 
+- 2026-10-19 (Opus thread): ui/mod.rs compiles (4beb5c7); window reopens on last page (9c8a113); engine/hotkeys/transcribe/output committed (14274f2) after fixing three std::Mutex deadlocks that froze startup before the window opened; settings reach the running engine via Engine::set_config (4ec80ef). `cargo test` 9 suites green. Release exe runs: screenshots work/reports/2026-10-19-fd-rust-window.png and -settings.png (captured 2026-10-19 via PrintWindow under the desktop lock).
+- Helpers (OpenCode, GLM 5.3 Flash): engine review (3 fixes), hotkeys/output review (clipboard retries, typing pace), autostart + README (in progress), textproc port (in progress).
+
 ## Next
 
-1. Integrate audio + hotkeys/transcribe + ui as their agents land, one commit each.
-2. cargo build --release must finish; cargo test green.
-3. Run the exe, screenshot the settings window (desktop locked via coop), PNG in work/reports/, attach through t3_attachment_prepare_upload -> POST -> t3_thread_send_attachments.
-4. README section for start with Windows; tray icon only if trivial.
+1. Commit autostart.rs + README + test_autostart once its helper reports (lib.rs already declares `pub mod autostart;`, so HEAD needs that file).
+2. Wire textproc into engine run_take (engine/mod.rs "Text clean-up (textproc) is not ported").
+3. Add a "Start with Windows" checkbox to the settings page.
+4. audio/mod.rs belongs to the fd-exclusive thread (WASAPI exclusive); it commits its own work.
+5. Not tested: a real dictation with mic + downloaded model.
