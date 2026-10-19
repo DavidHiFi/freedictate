@@ -6,19 +6,76 @@ pub const DEFAULTS: &str = r#"{
   "hotkey": "ctrl+win",
   "hotkey_mode": "hold",
   "cancel_key": "esc",
+  "model": "small.en",
+  "language": "en",
   "input_device": "",
   "sounds": true,
   "sound_volume": 50,
+  "max_seconds": 600,
+  "auto_stop_silence": 0,
+  "vocabulary": "",
+  "output": "paste",
+  "restore_clipboard": true,
+  "trailing_space": true,
+  "remove_fillers": true,
+  "remove_repeats": true,
+  "capitalize": true,
+  "end_punctuation": true,
+  "voice_commands": true,
+  "replacements": [],
+  "auto_submit": false,
+  "ai_tidy": false,
+  "ai_model": "standard",
   "mic_privacy_while_dictating": false,
   "isolate_output_while_dictating": false,
-  "isolate_output_level": 0
+  "isolate_output_level": 0,
+  "overlay": true,
+  "overlay_position": "bottom",
+  "overlay_timer": true,
+  "overlay_backdrop": "solid",
+  "theme": "Catppuccin Mocha",
+  "accent_source": "theme",
+  "font": "Segoe UI Variable Text",
+  "backdrop": "mica_alt",
+  "tint": 65,
+  "backdrop_when_inactive": false,
+  "titlebar": "custom",
+  "reduce_motion": false,
+  "run_elevated": false,
+  "history_enabled": true,
+  "history_days": 0,
+  "check_updates": true,
+  "update_prereleases": false,
+  "skipped_version": "",
+  "last_update_check": 0,
+  "device": "auto",
+  "compute_type": "auto",
+  "cpu_threads": 6,
+  "beam_size": 5,
+  "vad": true,
+  "min_seconds": 0.4,
+  "silence_peak": 0.004,
+  "paste_delay_ms": 40,
+  "idle_unload": true,
+  "idle_seconds": 0,
+  "first_run_done": false,
+  "window_geometry": "",
+  "window_page": "dictation"
 }"#;
 
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub path: PathBuf,
-    data: Value,
-}
+pub const CHOICES: &[(&str, &[&str])] = &[
+    ("hotkey_mode", &["hold", "toggle", "both"]),
+    ("output", &["paste", "paste_shift_insert", "type", "clipboard"]),
+    ("overlay_position", &["bottom", "top"]),
+    ("accent_source", &["theme", "windows"]),
+    ("backdrop", &["mica_alt", "mica", "acrylic", "blur", "solid"]),
+    ("ai_model", &["light", "standard"]),
+    ("overlay_backdrop", &["mica_alt", "mica", "acrylic", "blur", "solid"]),
+    ("titlebar", &["custom", "windows"]),
+    ("device", &["auto", "cpu", "cuda"]),
+    ("compute_type", &["auto", "int8", "int8_float16", "float16", "float32"]),
+    ("window_page", &["dictation", "settings"]),
+];
 
 pub const QUIET_STEPS: [u32; 3] = [0, 25, 50];
 
@@ -31,29 +88,6 @@ fn quiet_step(value: u32) -> u32 {
             .min_by_key(|step| (**step as i32 - value as i32).abs())
             .unwrap_or(&0)
     }
-}
-
-fn coerce(key: &str, default: &Value, value: &Value) -> Value {
-    if default.is_boolean() {
-        if let Some(text) = value.as_str() {
-            return serde_json::json!(matches!(
-                text.trim().to_ascii_lowercase().as_str(),
-                "true" | "1" | "yes" | "on"
-            ));
-        }
-        return serde_json::json!(value.as_bool().unwrap_or(false));
-    }
-    if let (Some(range), Some(number)) = (range_for(key), value.as_f64()) {
-        let clamped = number.clamp(range.0, range.1);
-        if default.is_u64() {
-            let as_u32 = u32::try_from(clamped.round() as i64).unwrap_or(0);
-            if key == "isolate_output_level" {
-                return serde_json::json!(quiet_step(as_u32));
-            }
-            return serde_json::json!(as_u32);
-        }
-    }
-    value.clone()
 }
 
 fn range_for(key: &str) -> Option<(f64, f64)> {
@@ -69,16 +103,88 @@ fn range_for(key: &str) -> Option<(f64, f64)> {
         "silence_peak" => Some((0.0, 0.2)),
         "paste_delay_ms" => Some((0.0, 1000.0)),
         "idle_seconds" => Some((0.0, 3600.0)),
+        "last_update_check" => Some((0.0, f64::MAX)),
         _ => None,
     }
 }
 
+fn coerce(key: &str, default: &Value, value: &Value) -> Value {
+    if default.is_boolean() {
+        if let Some(text) = value.as_str() {
+            return serde_json::json!(matches!(
+                text.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            ));
+        }
+        return serde_json::json!(value.as_bool().unwrap_or(false));
+    }
+    if let (Some(range), Some(number)) = (range_for(key), value.as_f64()) {
+        let clamped = number.clamp(range.0, range.1);
+        if key == "min_seconds" || key == "silence_peak" || key == "last_update_check" {
+            return serde_json::json!(clamped);
+        }
+        if default.is_f64() {
+            return serde_json::json!(clamped);
+        }
+        if default.is_i64() || default.is_u64() {
+            let as_u32 = u32::try_from(clamped.round() as i64).unwrap_or(0);
+            if key == "isolate_output_level" {
+                return serde_json::json!(quiet_step(as_u32));
+            }
+            return serde_json::json!(as_u32);
+        }
+    }
+    if let Some(numbers) = default.as_array() {
+        // Only the word-replacement list is editable; keep it well formed.
+        if key == "replacements" {
+            if let Some(items) = value.as_array() {
+                let kept: Vec<Value> = items
+                    .iter()
+                    .filter(|item| {
+                        item.get("find")
+                            .and_then(Value::as_str)
+                            .map(|f| !f.trim().is_empty())
+                            .unwrap_or(false)
+                    })
+                    .map(|item| {
+                        serde_json::json!({
+                            "find": item.get("find").and_then(Value::as_str).unwrap_or(""),
+                            "replace": item.get("replace").and_then(Value::as_str).unwrap_or(""),
+                        })
+                    })
+                    .collect();
+                return serde_json::json!(kept);
+            }
+            return serde_json::json!(numbers.clone());
+        }
+        return value.clone();
+    }
+    if default.is_string() {
+        let text = value.as_str().unwrap_or_default().to_string();
+        if let Some((_, options)) = CHOICES.iter().find(|(name, _)| *name == key) {
+            if !options.contains(&text.as_str()) {
+                return default.clone();
+            }
+        }
+        return serde_json::json!(text);
+    }
+    value.clone()
+}
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub path: PathBuf,
+    data: Value,
+}
+
 impl Config {
     pub fn default_path() -> PathBuf {
+        // A distinct folder: the installed Python app keeps %APPDATA%\FreeDictate
+        // and the Rust build must never rewrite its settings.
         std::env::var("APPDATA")
             .map(|appdata| {
                 PathBuf::from(appdata)
-                    .join("FreeDictate")
+                    .join("FreeDictate-Rust")
                     .join("settings.json")
             })
             .unwrap_or_else(|_| PathBuf::from("settings.json"))
@@ -147,6 +253,10 @@ impl Config {
             .and_then(Value::as_u64)
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(0)
+    }
+
+    pub fn float_value(&self, key: &str) -> f64 {
+        self.get(key).and_then(Value::as_f64).unwrap_or(0.0)
     }
 
     pub fn string_value(&self, key: &str) -> String {
