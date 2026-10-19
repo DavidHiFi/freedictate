@@ -64,6 +64,7 @@ enum Message {
     MaxSecondsReleased,
     BeamSizeChanged(f32),
     BeamSizeReleased,
+    StartWithWindowsToggled(bool),
     Reset,
 }
 
@@ -95,6 +96,8 @@ struct App {
     cpu_threads: Option<f32>,
     max_seconds: Option<f32>,
     beam_size: Option<f32>,
+    // Read from the Run key once at start; the registry is the truth.
+    start_with_windows: bool,
 }
 
 impl App {
@@ -118,6 +121,7 @@ impl App {
             cpu_threads: None,
             max_seconds: None,
             beam_size: None,
+            start_with_windows: crate::autostart::is_enabled(),
         };
         app.refresh_downloaded();
         app.refresh_mics();
@@ -230,6 +234,13 @@ impl App {
             Message::BeamSizeReleased => {
                 if let Some(value) = self.beam_size.take() {
                     self.apply(json!({ "beam_size": value.round() as u32 }));
+                }
+            }
+            Message::StartWithWindowsToggled(on) => {
+                if let Ok(exe) = std::env::current_exe() {
+                    if crate::autostart::set_enabled(on, &exe).is_ok() {
+                        self.start_with_windows = on;
+                    }
                 }
             }
             Message::Reset => {
@@ -556,6 +567,15 @@ impl App {
                 .into(),
         );
         items.push(caption("Defaults suit most people."));
+
+        // Startup
+        items.push(heading("Startup"));
+        items.push(
+            checkbox(self.start_with_windows)
+                .label("Start with Windows")
+                .on_toggle(Message::StartWithWindowsToggled)
+                .into(),
+        );
 
         // Window buttons
         items.push(
