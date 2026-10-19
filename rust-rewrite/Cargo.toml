@@ -28,3 +28,4 @@ windows = { version = "0.62", features = [
     "Win32_System_Ole",
     "Win32_System_SystemInformation",
 ] }
+fancy-regex = "0.19.2"

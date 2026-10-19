@@ -1042,13 +1042,43 @@ fn run_take(shared: &Arc<EngineShared>, take: &TakeJob) {
         (shared.emit)("nothing", json!({ "reason": "empty" }));
         return;
     }
-    // Text clean-up (textproc) is not ported; the raw Whisper output is kept.
-    let delivered = if cfg.2 && cfg.3 != "clipboard" && !raw.ends_with('\n') {
-        format!("{raw} ")
+    // Text clean-up (textproc) is now ported: apply the same cleaning as in Python engine.py
+    let mut cleaned = raw.clone();
+    // Build options from engine config
+    let opts = crate::textproc::Options {
+        remove_fillers: lock(&shared.cfg).bool_value("remove_fillers"),
+        voice_commands: lock(&shared.cfg).bool_value("voice_commands"),
+        capitalize: lock(&shared.cfg).bool_value("capitalize"),
+        end_punctuation: lock(&shared.cfg).bool_value("end_punctuation"),
+        repeats: lock(&shared.cfg).bool_value("remove_repeats"),
+        replacements: vec![],       // replacements not yet configured in this build
+        language: Some(lock(&shared.cfg).string_value("language")),
+    };
+    // Check if active model forces English-only language for cleaning
+    let english_only = transcribe::CATALOG
+        .iter()
+        .find(|m| m.name == active)
+        .map(|m| m.english_only)
+        .unwrap_or(false);
+    let lang = if english_only { "en".to_string() } else { opts.language.as_deref().unwrap_or("").to_string() };
+    let mut opts = opts;
+    opts.language = Some(lang);
+    cleaned = crate::textproc::clean(&cleaned, &opts);
+    let delivered = if cfg.2 && cfg.3 != "clipboard" && !cleaned.ends_with('\n') {
+        format!("{cleaned} ")
     } else {
-        raw.clone()
+        cleaned.clone()
     };
     let outcome = crate::output::deliver(&delivered, &cfg.3, cfg.4, cfg.5);
+    (shared.emit)(
+        "result",
+        json!({
+            "text": cleaned,
+            "outcome": outcome,
+            "seconds": take.seconds,
+            "took": took,
+        }),
+    );
     (shared.emit)(
         "result",
         json!({

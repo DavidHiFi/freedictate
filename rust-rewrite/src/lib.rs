@@ -5,5 +5,6 @@ pub mod ducking;
 pub mod engine;
 pub mod hotkeys;
 pub mod output;
+pub mod textproc;
 pub mod transcribe;
 pub mod ui;
