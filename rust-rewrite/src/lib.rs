@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod autostart;
 pub mod config;
 pub mod ducking;
 pub mod engine;

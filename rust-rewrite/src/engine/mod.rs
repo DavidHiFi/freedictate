@@ -179,6 +179,12 @@ impl Engine {
         }
     }
 
+    /// Swap in a changed config. The worker threads read it live, so the
+    /// next poll and the next take use the new values.
+    pub fn set_config(&self, cfg: Config) {
+        *lock(&self.shared.cfg) = cfg;
+    }
+
     pub fn shutdown(&mut self) {
         let shared = &self.shared;
         shared.stop.store(true, Ordering::Relaxed);

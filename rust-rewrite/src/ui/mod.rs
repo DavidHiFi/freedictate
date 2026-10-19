@@ -4,10 +4,8 @@
 //! subscription drains them. That subscription doubles as the tick that
 //! refreshes the status text and download progress when no events arrive.
 //!
-//! Config propagation: Engine::new consumes a snapshot of the config and
-//! keeps it for the engine's lifetime; Engine has no setter yet. Every
-//! control here therefore saves its change to disk with cfg.update +
-//! cfg.save and keeps the window in step with its own copy of the config.
+//! Config propagation: every control saves its change with cfg.update +
+//! cfg.save, then hands the engine the new copy through set_config.
 //! Engine actions (pause, load, unload) are called directly on the engine.
 //! Nothing here rebuilds the engine per keystroke.
 
@@ -241,12 +239,11 @@ impl App {
         iced::Task::none()
     }
 
-    /// Save a batch of values and keep the engine config in step as far as
-    /// this build can: the snapshot the engine holds replaces itself the
-    /// next time it reloads its own copy, which today means a restart.
+    /// Save a batch of values and hand the engine the new config.
     fn apply(&mut self, values: Value) {
         self.cfg.update(&values);
         let _ = self.cfg.save();
+        self.engine.set_config(self.cfg.clone());
     }
 
     /// Back to the shipped values, keeping the window bookkeeping only:
