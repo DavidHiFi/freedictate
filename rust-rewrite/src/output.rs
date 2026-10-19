@@ -6,18 +6,20 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HANDLE, HGLOBAL};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_QUERY};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardSequenceNumber,
-    OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+    GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+};
 use windows::Win32::System::Threading::{
     OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, SendInput, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_INSERT, VK_RETURN, VK_SHIFT, VK_V, INPUT,
-    INPUT_KEYBOARD,
+    GetAsyncKeyState, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_INSERT, VK_RETURN, VK_SHIFT,
+    VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
@@ -26,13 +28,13 @@ pub const CF_UNICODETEXT: u32 = 13;
 // Handle-based formats that are not global memory; Windows re-synthesizes them.
 const GDI_FORMATS: [u32; 4] = [2, 3, 9, 14];
 
-const TRANSIENT_FORMATS: [&str; 3] = [
+pub const TRANSIENT_FORMATS: [&str; 3] = [
     "ExcludeClipboardContentFromMonitorProcessing",
     "CanIncludeInClipboardHistory",
     "CanUploadToCloudClipboard",
 ];
 
-fn registered(name: &str) -> u32 {
+pub fn registered(name: &str) -> u32 {
     let mut utf16: Vec<u16> = name.encode_utf16().collect();
     utf16.push(0);
     unsafe { RegisterClipboardFormatW(PCWSTR(utf16.as_ptr())) }
@@ -66,7 +68,11 @@ fn send_batch(rows: &[KEYBDINPUT]) -> u32 {
 }
 
 fn chord(modifier: VIRTUAL_KEY, vk: VIRTUAL_KEY, extended: bool) {
-    let ext = if extended { KEYEVENTF_EXTENDEDKEY } else { KEYBD_EVENT_FLAGS(0) };
+    let ext = if extended {
+        KEYEVENTF_EXTENDEDKEY
+    } else {
+        KEYBD_EVENT_FLAGS(0)
+    };
     send_batch(&[
         key_input(modifier, 0, KEYBD_EVENT_FLAGS(0)),
         key_input(vk, 0, ext),
@@ -76,7 +82,10 @@ fn chord(modifier: VIRTUAL_KEY, vk: VIRTUAL_KEY, extended: bool) {
 }
 
 pub fn press_enter() {
-    send_batch(&[key_input(VK_RETURN, 0, KEYBD_EVENT_FLAGS(0)), key_input(VK_RETURN, 0, KEYEVENTF_KEYUP)]);
+    send_batch(&[
+        key_input(VK_RETURN, 0, KEYBD_EVENT_FLAGS(0)),
+        key_input(VK_RETURN, 0, KEYEVENTF_KEYUP),
+    ]);
 }
 
 pub fn type_text(text: &str) {
@@ -90,11 +99,17 @@ pub fn type_text(text: &str) {
         let mut buffer = [0u16; 2];
         for code in ch.encode_utf16(&mut buffer) {
             batch.push(key_input(VIRTUAL_KEY(0), *code, KEYEVENTF_UNICODE));
-            batch.push(key_input(VIRTUAL_KEY(0), *code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+            batch.push(key_input(
+                VIRTUAL_KEY(0),
+                *code,
+                KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+            ));
         }
-        if batch.len() >= 128 {
+        if batch.len() >= 64 {
             send_batch(&batch);
             batch.clear();
+            // Pace bursts 4 ms apart, as Python does, so slow apps keep up.
+            std::thread::sleep(std::time::Duration::from_millis(4));
         }
     }
     send_batch(&batch);
@@ -169,7 +184,7 @@ pub fn save_clipboard() -> Option<Vec<(u32, Vec<u8>)>> {
 }
 
 pub fn restore_clipboard(saved: &[(u32, Vec<u8>)]) {
-    if !open_clipboard(1) {
+    if !open_clipboard(20) {
         return;
     }
     unsafe {
@@ -190,20 +205,23 @@ pub fn set_clipboard(text: &str, transient: bool) -> bool {
     let mut ok = false;
     unsafe {
         let _ = EmptyClipboard();
-        let mut bytes: Vec<u8> = text
-            .encode_utf16()
-            .flat_map(|c| c.to_le_bytes())
-            .collect();
+        let mut bytes: Vec<u8> = text.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
         bytes.extend_from_slice(&[0, 0]);
         if let Some(h) = global_from_bytes(&bytes) {
-            let set = SetClipboardData(CF_UNICODETEXT, Some(std::mem::transmute::<HGLOBAL, HANDLE>(h)));
+            let set = SetClipboardData(
+                CF_UNICODETEXT,
+                Some(std::mem::transmute::<HGLOBAL, HANDLE>(h)),
+            );
             ok = set.is_ok();
         }
         if ok && transient {
             let zero = [0u8; 4];
             for name in TRANSIENT_FORMATS {
                 if let Some(h) = global_from_bytes(&zero) {
-                    let _ = SetClipboardData(registered(name), Some(std::mem::transmute::<HGLOBAL, HANDLE>(h)));
+                    let _ = SetClipboardData(
+                        registered(name),
+                        Some(std::mem::transmute::<HGLOBAL, HANDLE>(h)),
+                    );
                 }
             }
         }
@@ -213,7 +231,7 @@ pub fn set_clipboard(text: &str, transient: bool) -> bool {
 }
 
 pub fn get_clipboard_text() -> String {
-    if !open_clipboard(1) {
+    if !open_clipboard(20) {
         return String::new();
     }
     let mut out = String::new();
@@ -257,7 +275,13 @@ pub fn foreground_process_name() -> String {
         };
         let mut buf = [0u16; 1024];
         let mut size = buf.len() as u32;
-        let name = if QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut size).is_ok()
+        let name = if QueryFullProcessImageNameW(
+            h,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut size,
+        )
+        .is_ok()
         {
             String::from_utf16_lossy(&buf[..size as usize])
                 .rsplit('\\')
