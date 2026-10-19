@@ -85,6 +85,12 @@ pub(crate) enum Message {
     ThemeSelected(String),
     #[allow(dead_code)]
     SettingsSection(String),
+    #[allow(dead_code)]
+    AccentSourceSelected(String),
+    #[allow(dead_code)]
+    FontSelected(String),
+    #[allow(dead_code)]
+    BackdropSelected(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,13 +313,32 @@ impl App {
             Message::ThemeSelected(name) => {
                 self.theme_name = name.clone();
                 self.apply(json!({ "theme": name }));
-                chrome::request(self.palette(), self.cfg.string_value("backdrop"));
+                self.refresh_chrome();
             }
             Message::SettingsSection(section) => {
                 self.settings_section = section;
             }
+            Message::AccentSourceSelected(source) => {
+                self.apply(json!({ "accent_source": source }));
+                self.refresh_chrome();
+            }
+            Message::FontSelected(family) => {
+                // iced fixes the default font at boot; the new family
+                // applies on the next start.
+                self.apply(json!({ "font": family }));
+            }
+            Message::BackdropSelected(backdrop) => {
+                self.apply(json!({ "backdrop": backdrop }));
+                self.refresh_chrome();
+            }
         }
         iced::Task::none()
+    }
+
+    /// Re-apply the window chrome after a look change: the palette and the
+    /// backdrop both live in config, and the DWM attributes take them live.
+    fn refresh_chrome(&self) {
+        chrome::request(self.palette(), self.cfg.string_value("backdrop"));
     }
 
     /// The palette the window currently draws with: resolve() plus the
