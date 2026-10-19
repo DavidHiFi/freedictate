@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "freedictate-rust"
 version = "0.1.0"
 edition = "2021"
@@ -10,9 +10,11 @@ cpal = "0.18"
 rubato = "5"
 whisper-rs = "0.16"
 ureq = "3"
-iced = "0.14"
+iced = { version = "0.14", features = ["svg"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_System_Registry",
     "Win32_Media_Audio",
     "Win32_Media_Multimedia",
     "Win32_System_Com",

@@ -17,11 +17,15 @@ use serde_json::{json, Value};
 use crate::config::{Config, DEFAULTS};
 use crate::engine::Engine;
 use iced::widget::{
-    button, checkbox, column, container, pick_list, row, scrollable, slider, text, text_input,
+    button, checkbox, column, pick_list, row, scrollable, slider, text, text_input,
 };
 use iced::Length;
 
+pub(crate) mod chrome;
 mod options;
+pub(crate) mod pages;
+pub(crate) mod theme;
+pub(crate) mod widgets;
 
 use options::Choice;
 
@@ -35,7 +39,7 @@ const POLL: Duration = Duration::from_millis(60);
 
 /// One message per control that can change something.
 #[derive(Debug, Clone)]
-enum Message {
+pub(crate) enum Message {
     Tick,
     Engine(String, Value),
     TogglePause,
@@ -75,6 +79,12 @@ enum Message {
     SilencePeakReleased,
     ClearHistory,
     Reset,
+    // The Fluent shell: theme picker, backdrop and the settings nav rail.
+    // Constructed by the rebuilt pages.
+    #[allow(dead_code)]
+    ThemeSelected(String),
+    #[allow(dead_code)]
+    SettingsSection(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,10 +93,10 @@ enum Page {
     Settings,
 }
 
-/// A view element in the default theme and renderer.
-type Element<'a> = iced::Element<'a, Message, iced::Theme, iced::Renderer>;
+/// A view element in the app theme and renderer.
+pub(crate) type Element<'a> = iced::Element<'a, Message, iced::Theme, iced::Renderer>;
 
-struct App {
+pub(crate) struct App {
     cfg: Config,
     engine: Engine,
     page: Page,
@@ -108,6 +118,10 @@ struct App {
     beam_size: Option<f32>,
     // Read from the Run key once at start; the registry is the truth.
     start_with_windows: bool,
+    // The configured palette name ("Match Windows" resolves live) and the
+    // settings nav section currently open.
+    theme_name: String,
+    settings_section: String,
 }
 
 impl App {
@@ -119,6 +133,8 @@ impl App {
         } else {
             Page::Dictation
         };
+        let theme_name = cfg.string_value("theme");
+        let settings_section = "general".to_string();
         let mut app = App {
             cfg,
             engine,
@@ -133,6 +149,8 @@ impl App {
             max_seconds: None,
             beam_size: None,
             start_with_windows: crate::autostart::is_enabled(),
+            theme_name,
+            settings_section,
         };
         app.refresh_downloaded();
         app.refresh_mics();
@@ -286,8 +304,25 @@ impl App {
             Message::Reset => {
                 self.reset_to_defaults();
             }
+            Message::ThemeSelected(name) => {
+                self.theme_name = name.clone();
+                self.apply(json!({ "theme": name }));
+                chrome::request(self.palette(), self.cfg.string_value("backdrop"));
+            }
+            Message::SettingsSection(section) => {
+                self.settings_section = section;
+            }
         }
         iced::Task::none()
+    }
+
+    /// The palette the window currently draws with: resolve() plus the
+    /// Windows accent override, from the saved config keys.
+    fn palette(&self) -> theme::Palette {
+        theme::effective(
+            &self.theme_name,
+            &self.cfg.string_value("accent_source"),
+        )
     }
 
     /// Save a batch of values and hand the engine the new config.
@@ -336,7 +371,7 @@ impl App {
     }
 
     fn theme(&self) -> iced::Theme {
-        iced::Theme::Light
+        theme::to_iced(&self.palette())
     }
 
     fn subscription(&self) -> iced::Subscription<Message> {
@@ -346,11 +381,10 @@ impl App {
     // ------------------------------------------------------------- view
 
     fn view(&self) -> Element<'_> {
-        let content = match self.page {
-            Page::Dictation => self.dictation_view(),
-            Page::Settings => self.settings_view(),
-        };
-        container(content).padding(14).width(Length::Fill).into()
+        match self.page {
+            Page::Dictation => pages::dictation::view(self),
+            Page::Settings => pages::settings::view(self),
+        }
     }
 
     fn dictation_view(&self) -> Element<'_> {
@@ -816,7 +850,12 @@ pub fn run(cfg_path: Option<std::path::PathBuf>) -> iced::Result {
     });
     let mut engine = Engine::new(cfg.clone(), emit);
     engine.start();
-    let state = std::sync::Mutex::new(Some(App::new(cfg, engine)));
+    let state = std::sync::Mutex::new(Some(App::new(cfg.clone(), engine)));
+    // Fluent chrome: dark/tinted title bar and the configured backdrop. The
+    // window does not exist until iced opens it, so request retries.
+    let boot_palette = theme::effective(&cfg.string_value("theme"), &cfg.string_value("accent_source"));
+    chrome::request(boot_palette, cfg.string_value("backdrop"));
+    let font_family = cfg.string_value("font");
     iced::application(
         move || {
             state
@@ -830,6 +869,7 @@ pub fn run(cfg_path: Option<std::path::PathBuf>) -> iced::Result {
     )
     .title("FreeDictate")
     .theme(App::theme)
+    .default_font(iced::Font::with_name(std::boxed::Box::leak(font_family.into_boxed_str())))
     .subscription(App::subscription)
     .window(iced::window::Settings {
         size: iced::Size::new(640.0, 560.0),
