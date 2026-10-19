@@ -102,10 +102,16 @@ struct App {
 impl App {
     fn new(cfg: Config, engine: Engine) -> Self {
         let hotkey_draft = cfg.string_value("hotkey");
+        // Reopen on the page the user last had open, like the Python app.
+        let page = if cfg.string_value("window_page") == "settings" {
+            Page::Settings
+        } else {
+            Page::Dictation
+        };
         let mut app = App {
             cfg,
             engine,
-            page: Page::Dictation,
+            page,
             paused: false,
             downloaded: Vec::new(),
             mics: Vec::new(),
@@ -137,9 +143,11 @@ impl App {
             }
             Message::OpenSettings => {
                 self.page = Page::Settings;
+                self.apply(json!({ "window_page": "settings" }));
             }
             Message::CloseSettings => {
                 self.page = Page::Dictation;
+                self.apply(json!({ "window_page": "dictation" }));
             }
             Message::HotkeyChanged(text) => {
                 self.hotkey_draft = text.clone();
@@ -245,8 +253,7 @@ impl App {
     /// reset also restores the default hotkey, but never touches
     /// first_run_done, window_geometry or the open page.
     fn reset_to_defaults(&mut self) {
-        let defaults: Value =
-            serde_json::from_str(DEFAULTS).expect("DEFAULTS parses as json");
+        let defaults: Value = serde_json::from_str(DEFAULTS).expect("DEFAULTS parses as json");
         let mut reset = serde_json::Map::new();
         if let Some(object) = defaults.as_object() {
             for (key, value) in object {
@@ -314,7 +321,11 @@ impl App {
             ))
             .into(),
         );
-        items.push(button("Open Settings").on_press(Message::OpenSettings).into());
+        items.push(
+            button("Open Settings")
+                .on_press(Message::OpenSettings)
+                .into(),
+        );
         column(items).spacing(10).width(Length::Fill).into()
     }
 
@@ -333,7 +344,9 @@ impl App {
         );
         let warning = crate::hotkeys::warning(&self.hotkey_draft);
         if !valid {
-            items.push(caption("Not a valid shortcut. Use key + key, for example Ctrl + Win."));
+            items.push(caption(
+                "Not a valid shortcut. Use key + key, for example Ctrl + Win.",
+            ));
         } else {
             items.push(caption(&crate::hotkeys::label(&self.hotkey_draft)));
         }
@@ -345,9 +358,7 @@ impl App {
         items.push(heading("Hotkey trigger mode"));
         let modes = options::trigger_modes();
         let mode = options::select(&modes, &self.cfg.string_value("hotkey_mode")).cloned();
-        items.push(
-            pick_list(modes, mode, |c: Choice| Message::TriggerModeSelected(c.key)).into(),
-        );
+        items.push(pick_list(modes, mode, |c: Choice| Message::TriggerModeSelected(c.key)).into());
 
         // Microphone
         items.push(heading("Microphone"));
@@ -355,10 +366,14 @@ impl App {
         let current = self.cfg.string_value("input_device");
         let selected = mic_choice(&mics, &current);
         items.push(
-            pick_list(mics.clone(), Some(selected.clone()), |c: Choice| Message::MicSelected(c.key))
-                .into(),
+            pick_list(mics.clone(), Some(selected.clone()), |c: Choice| {
+                Message::MicSelected(c.key)
+            })
+            .into(),
         );
-        items.push(caption("System default picks the microphone Windows is using."));
+        items.push(caption(
+            "System default picks the microphone Windows is using.",
+        ));
 
         // Sounds
         items.push(heading("Sounds"));
@@ -378,7 +393,9 @@ impl App {
                 .width(220.0)
                 .into(),
         );
-        items.push(caption("A short tone when recording starts and stops, and when the text arrives."));
+        items.push(caption(
+            "A short tone when recording starts and stops, and when the text arrives.",
+        ));
 
         // Speech model
         items.push(heading("Speech model"));
@@ -469,14 +486,20 @@ impl App {
         if options::level_enabled(isolate) {
             let level = self.cfg.number_value("isolate_output_level");
             items.push(
-                pick_list(options::level_options(), Some(options::level_selected(level)), |c| {
-                    Message::IsolateLevelSelected(c.key)
-                })
+                pick_list(
+                    options::level_options(),
+                    Some(options::level_selected(level)),
+                    |c| Message::IsolateLevelSelected(c.key),
+                )
                 .into(),
             );
         } else {
-            items.push(caption("The level below only shows while Mute other apps' sound is on."));
-            items.push(caption(options::level_menu_string(self.cfg.number_value("isolate_output_level"))));
+            items.push(caption(
+                "The level below only shows while Mute other apps' sound is on.",
+            ));
+            items.push(caption(options::level_menu_string(
+                self.cfg.number_value("isolate_output_level"),
+            )));
         }
         items.push(caption("These switches apply on the next take."));
 
@@ -486,8 +509,10 @@ impl App {
         let device = self.cfg.string_value("device");
         if let Some(choice) = options::select(&devices, &device).cloned() {
             items.push(
-                pick_list(devices, Some(choice.clone()), |c| Message::DeviceSelected(c.key))
-                    .into(),
+                pick_list(devices, Some(choice.clone()), |c| {
+                    Message::DeviceSelected(c.key)
+                })
+                .into(),
             );
         }
         let compute = options::compute_types();
@@ -588,7 +613,11 @@ impl App {
     fn model_progress(&self) -> String {
         let (status, _active, done, total) = self.engine.model_status();
         if status == "downloading" && total > 0 {
-            format!("Downloading the speech model: {} of {}", mb(done), mb(total))
+            format!(
+                "Downloading the speech model: {} of {}",
+                mb(done),
+                mb(total)
+            )
         } else {
             // status_text() carries everything else.
             String::new()
@@ -635,12 +664,10 @@ fn caption_beam(beam: f32) -> Element<'static> {
 }
 
 fn mic_choice(mics: &[Choice], saved: &str) -> Choice {
-    options::select(mics, saved)
-        .cloned()
-        .unwrap_or(Choice {
-            key: String::new(),
-            label: "System default".to_string(),
-        })
+    options::select(mics, saved).cloned().unwrap_or(Choice {
+        key: String::new(),
+        label: "System default".to_string(),
+    })
 }
 
 fn mb(bytes: u64) -> String {
@@ -699,28 +726,31 @@ fn events_stream() -> impl iced::futures::Stream<Item = Message> {
     use iced::futures::SinkExt as _;
     use std::sync::mpsc::RecvTimeoutError;
 
-    iced::stream::channel(64, |out: iced::futures::channel::mpsc::Sender<Message>| async move {
-        let mut out = out;
-        let mut next_tick = Instant::now() + TICK;
-        loop {
-            match EVENT_QUEUE.get() {
-                Some(rx) => match {
-                    let received = rx.lock().expect("event queue").recv_timeout(POLL);
-                    received
-                } {
-                    Ok((kind, data)) => {
-                        let _ = out.send(Message::Engine(kind, data)).await;
-                    }
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => break,
-                },
-                // run() has not installed the queue yet; idle until it does.
-                None => std::thread::sleep(POLL),
+    iced::stream::channel(
+        64,
+        |out: iced::futures::channel::mpsc::Sender<Message>| async move {
+            let mut out = out;
+            let mut next_tick = Instant::now() + TICK;
+            loop {
+                match EVENT_QUEUE.get() {
+                    Some(rx) => match {
+                        let received = rx.lock().expect("event queue").recv_timeout(POLL);
+                        received
+                    } {
+                        Ok((kind, data)) => {
+                            let _ = out.send(Message::Engine(kind, data)).await;
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    },
+                    // run() has not installed the queue yet; idle until it does.
+                    None => std::thread::sleep(POLL),
+                }
+                if Instant::now() >= next_tick {
+                    next_tick = Instant::now() + TICK;
+                    let _ = out.send(Message::Tick).await;
+                }
             }
-            if Instant::now() >= next_tick {
-                next_tick = Instant::now() + TICK;
-                let _ = out.send(Message::Tick).await;
-            }
-        }
-    })
+        },
+    )
 }
