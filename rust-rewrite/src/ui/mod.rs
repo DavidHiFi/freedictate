@@ -65,6 +65,15 @@ enum Message {
     BeamSizeChanged(f32),
     BeamSizeReleased,
     StartWithWindowsToggled(bool),
+    TextCleanupToggled(String, bool),
+    AiTidyToggled(bool),
+    AiModelSelected(String),
+    HistoryToggled(bool),
+    TrailingSpaceToggled(bool),
+    IdleUnloadToggled(bool),
+    SilencePeakChanged(f32),
+    SilencePeakReleased,
+    ClearHistory,
     Reset,
 }
 
@@ -93,6 +102,7 @@ struct App {
     hotkey_draft: String,
     // Positions while a slider is being dragged; None shows the stored value.
     sound_volume: Option<f32>,
+    silence_peak: Option<f32>,
     cpu_threads: Option<f32>,
     max_seconds: Option<f32>,
     beam_size: Option<f32>,
@@ -118,6 +128,7 @@ impl App {
             mics: Vec::new(),
             hotkey_draft,
             sound_volume: None,
+            silence_peak: None,
             cpu_threads: None,
             max_seconds: None,
             beam_size: None,
@@ -242,6 +253,35 @@ impl App {
                         self.start_with_windows = on;
                     }
                 }
+            }
+            Message::TextCleanupToggled(key, on) => {
+                self.apply(json!({ (key.as_str()): on }));
+            }
+            Message::AiTidyToggled(on) => {
+                self.apply(json!({ "ai_tidy": on }));
+            }
+            Message::AiModelSelected(name) => {
+                self.apply(json!({ "ai_model": name }));
+            }
+            Message::HistoryToggled(on) => {
+                self.apply(json!({ "history_enabled": on }));
+            }
+            Message::TrailingSpaceToggled(on) => {
+                self.apply(json!({ "trailing_space": on }));
+            }
+            Message::IdleUnloadToggled(on) => {
+                self.apply(json!({ "idle_unload": on }));
+            }
+            Message::SilencePeakChanged(v) => {
+                self.silence_peak = Some(v);
+            }
+            Message::SilencePeakReleased => {
+                if let Some(v) = self.silence_peak.take() {
+                    self.apply(json!({ "silence_peak": v }));
+                }
+            }
+            Message::ClearHistory => {
+                crate::engine::clear_history();
             }
             Message::Reset => {
                 self.reset_to_defaults();
@@ -473,6 +513,11 @@ impl App {
                 .on_toggle(Message::RestoreClipboardToggled)
                 .into(),
         );
+        items.push(checkbox(self.cfg.bool_value("trailing_space"))
+            .label("Add a space after")
+            .on_toggle(Message::TrailingSpaceToggled)
+            .into());
+        items.push(caption("So the next take doesn't run into this one."));
 
         // Privacy
         items.push(heading("Privacy"));
@@ -510,6 +555,64 @@ impl App {
             )));
         }
         items.push(caption("These switches apply on the next take."));
+
+        // Text clean-up
+        items.push(heading("Text"));
+        let text_items = [
+            ("capitalize", "Capital letter at the start", ""),
+            ("end_punctuation", "Full stop at the end", "Adds one when the sentence has none."),
+            ("remove_fillers", "Remove um and uh", "Drops hesitation sounds. Words like \"like\" stay."),
+            ("remove_repeats", "Remove repeated words", "Turns \"the the\" or \"I want, I want to\" into one. Words people repeat on purpose, like \"really really\", stay."),
+            ("voice_commands", "Spoken punctuation and lists", "Say \"comma\", \"full stop\", \"question mark\", \"colon\", \"hyphen\", \"open bracket\", \"open quote\", \"dot point\", \"new line\" or \"new paragraph\". Say \"literal\" first to type the word instead."),
+            ("auto_submit", "\"Submit\" presses Enter", "End a take with the word \"submit\" and it's removed and Enter is sent — handy for chat boxes. Off by default, and it stays off when output is clipboard-only."),
+        ];
+        for (key, label, note) in text_items {
+            let val = self.cfg.bool_value(key);
+            items.push(checkbox(val).label(label).on_toggle(move |on| Message::TextCleanupToggled(key.to_string(), on)).into());
+            if !note.is_empty() {
+                items.push(caption(note));
+            }
+        }
+
+        // AI tidy-up
+        items.push(heading("AI tidy-up"));
+        let ai_on = self.cfg.bool_value("ai_tidy");
+        items.push(checkbox(ai_on).label("Tidy with AI").on_toggle(|on| Message::AiTidyToggled(on)).into());
+        items.push(caption("A small writing model on this PC rewrites each take after it's transcribed. Nothing leaves your PC."));
+        let ai_models = options::choices(&[("light", "Light (faster)"), ("standard", "Standard (more accurate)")]);
+        let ai_model_key = self.cfg.string_value("ai_model");
+        let ai_default = options::Choice { key: "standard".to_string(), label: "Standard (more accurate)".to_string() };
+        let ai_sel = options::select(&ai_models, &ai_model_key).cloned().unwrap_or(ai_default);
+        items.push(pick_list(ai_models.clone(), Some(ai_sel), |c: Choice| Message::AiModelSelected(c.key)).into());
+
+        // History
+        items.push(heading("History"));
+        let hist_on = self.cfg.bool_value("history_enabled");
+        items.push(checkbox(hist_on).label("Save my dictations").on_toggle(|on| Message::HistoryToggled(on)).into());
+        items.push(caption("Stored only on this PC."));
+        items.push(
+            button("Clear history").on_press(Message::ClearHistory).into(),
+        );
+
+        // When idle
+        items.push(heading("When idle"));
+        items.push(
+            checkbox(self.cfg.bool_value("idle_unload"))
+                .label("Free the model when idle")
+                .on_toggle(Message::IdleUnloadToggled)
+                .into(),
+        );
+        items.push(caption("The model reloads on your next hotkey press."));
+        let peak = self
+            .silence_peak
+            .unwrap_or(self.cfg.float_value("silence_peak") as f32);
+        items.push(
+            slider(0.0..=0.2, peak, Message::SilencePeakChanged)
+                .on_release(Message::SilencePeakReleased)
+                .width(220.0)
+                .into(),
+        );
+        items.push(caption("Quieter than this counts as silence."));
 
         // Graphics card or processor
         items.push(heading("Graphics card or processor"));

@@ -8,3 +8,8 @@ pub mod output;
 pub mod textproc;
 pub mod transcribe;
 pub mod ui;
+pub mod history;
+pub mod writer;
+pub mod updater;
+pub mod tray;
+pub mod single_instance;

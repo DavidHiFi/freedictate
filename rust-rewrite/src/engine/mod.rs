@@ -54,6 +54,8 @@ struct EngineShared {
     jobs_pending: Mutex<usize>,
     serial: AtomicU64,
     cancel: Mutex<Arc<AtomicBool>>,
+    // Warn once per session when AI tidy-up is wanted but not ready (engine.py _tidy_warned).
+    tidy_warned: AtomicBool,
 }
 
 struct TakeJob {
@@ -61,6 +63,8 @@ struct TakeJob {
     seconds: f64,
     // Order of the take, so the stop key can drop it; 0 is never dropped.
     seq: u64,
+    // Foreground app at hotkey press, for the history record (engine.py take.app).
+    app: String,
 }
 
 pub struct Engine {
@@ -128,6 +132,25 @@ fn sound_volume(cfg: &Config) -> u32 {
     }
 }
 
+/// Process-wide history store at %APPDATA%\FreeDictate-Rust\history.db.
+fn shared_history() -> &'static crate::history::History {
+    static HISTORY: std::sync::OnceLock<crate::history::History> = std::sync::OnceLock::new();
+    HISTORY.get_or_init(|| {
+        let dir = std::env::var("APPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("FreeDictate-Rust");
+        let _ = std::fs::create_dir_all(&dir);
+        crate::history::History::new(&dir.join("history.db"), true)
+    });
+    HISTORY.get().unwrap()
+}
+
+/// Wipe the saved dictations (Settings "Clear history" button).
+pub fn clear_history() {
+    shared_history().clear();
+}
+
 impl Engine {
     pub fn new(cfg: Config, emit: EmitFn) -> Self {
         let shared = EngineShared {
@@ -140,6 +163,7 @@ impl Engine {
             jobs_pending: Mutex::new(0),
             serial: AtomicU64::new(0),
             cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
+            tidy_warned: AtomicBool::new(false),
         };
         Engine {
             shared: Arc::new(shared),
@@ -190,12 +214,13 @@ impl Engine {
         shared.stop.store(true, Ordering::Relaxed);
         lock(&shared.cancel).store(true, Ordering::Relaxed);
         if let Some(tx) = lock(&shared.jobs_tx).take() {
-            // A take in flight still finishes its delivery; history is not in
-            // this build, so the receiver only exits on the sentinel.
+            // A take in flight still finishes its delivery, history included; the
+            // receiver only exits on the sentinel.
             let _ = tx.send(TakeJob {
                 samples: Vec::new(),
                 seconds: 0.0,
                 seq: 0,
+                app: String::new(),
             });
             // The transcriber exits on stop anyway; the sentinel free slot is simpler.
         }
@@ -882,6 +907,7 @@ fn end_take(shared: &Arc<EngineShared>, recorder: &mut crate::audio::Recorder, c
             samples,
             seconds: secs,
             seq,
+            app: crate::output::foreground_process_name(),
         });
     }
     ducking::stop();
@@ -1064,6 +1090,33 @@ fn run_take(shared: &Arc<EngineShared>, take: &TakeJob) {
     let mut opts = opts;
     opts.language = Some(lang);
     cleaned = crate::textproc::clean(&cleaned, &opts);
+    // AI tidy-up (engine.py _tidy): only when the setting is on; warn once if
+    // the writer is not ready and keep the plain transcript in that case.
+    let before_tidy = cleaned.clone();
+    if lock(&shared.cfg).bool_value("ai_tidy") {
+        let model = lock(&shared.cfg).string_value("ai_model");
+        let reason = crate::writer::ready(&model);
+        if reason.is_empty() {
+            let vocab = lock(&shared.cfg).string_value("vocabulary");
+            if let Some(out) = crate::writer::rewrite(&cleaned, &model, &vocab, 30.0) {
+                // replacements config is not parsed yet (same gap as clean())
+                cleaned = crate::textproc::apply_replacements(&out, &[]);
+            }
+        } else if !shared.tidy_warned.swap(true, Ordering::SeqCst) {
+            (shared.emit)(
+                "error",
+                json!({
+                    "title": "AI tidy-up is off for now",
+                    "text": format!("{reason} The plain transcript was pasted. See Text and pasting in Settings."),
+                }),
+            );
+        }
+    }
+    // History (engine.py): the final text, with the pre-tidy text as raw.
+    if lock(&shared.cfg).bool_value("history_enabled") {
+        let model = lock(&shared.status).active.clone();
+        let _ = shared_history().record(&cleaned, take.seconds, &model, &take.app, &before_tidy);
+    }
     let delivered = if cfg.2 && cfg.3 != "clipboard" && !cleaned.ends_with('\n') {
         format!("{cleaned} ")
     } else {

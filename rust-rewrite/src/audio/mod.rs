@@ -667,6 +667,36 @@ pub fn play(name: &str, volume: u32) {
         .ok();
 }
 
+/// Offline capture simulation used by the parity tests. Feed interleaved
+/// native-rate samples through the same chain the device callback uses,
+/// exactly as PortAudio would call it, then flush and return the 16 kHz mono
+/// take plus its length in seconds. No audio device is opened.
+pub fn simulate_capture(
+    rate: u32,
+    channels: usize,
+    block: usize,
+    samples: &[f32],
+) -> (Vec<f32>, f64) {
+    let mut chain = Chain::new(rate).expect("test chain never fails");
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < samples.len() {
+        let end = (i + block).min(samples.len());
+        let mut interleaved: Vec<f32> = Vec::with_capacity((end - i) * channels);
+        for &s in &samples[i..end] {
+            for _ in 0..channels {
+                interleaved.push(s);
+            }
+        }
+        let mono = downmix(&interleaved, channels);
+        chain.feed(&mono, &mut out);
+        i = end;
+    }
+    chain.flush(&mut out);
+    let secs = out.len() as f64 / RATE as f64;
+    (out, secs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
