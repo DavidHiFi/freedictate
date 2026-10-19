@@ -20,10 +20,17 @@ Main agent owns Cargo.toml, lib.rs, main.rs, config, output, ducking, tests/test
 - 2026-10-19 (Opus thread): ui/mod.rs compiles (4beb5c7); window reopens on last page (9c8a113); engine/hotkeys/transcribe/output committed (14274f2) after fixing three std::Mutex deadlocks that froze startup before the window opened; settings reach the running engine via Engine::set_config (4ec80ef). `cargo test` 9 suites green. Release exe runs: screenshots work/reports/2026-10-19-fd-rust-window.png and -settings.png (captured 2026-10-19 via PrintWindow under the desktop lock).
 - Helpers (OpenCode, GLM 5.3 Flash): engine review (3 fixes), hotkeys/output review (clipboard retries, typing pace), autostart + README (in progress), textproc port (in progress).
 
+## Wave 5 complete (2026-10-19, DeepSeek/Halo's Sparks thread, 4-slot subagent relay)
+
+- Commits 95d530a (src) + accd711 (tests): five new modules landed and wired — history.rs (SQLite via rusqlite, legacy transcripts.log import/export, shared db under `%APPDATA%\FreeDictate-Rust\history.db`), single_instance.rs (named mutex held for the process lifetime, per-user registered wake message), tray.rs (Win32 tray icon + menu + message pump), updater.rs (GitHub release check, version ranking `alpha < beta < rc < final`, SHA256SUMS verification), writer.rs (llama.cpp engine download/serve, AI tidy-up).
+- Engine run_take now: transcribe → clean → AI tidy (writer::rewrite, warn-once when not ready) → history record (raw kept) → deliver. `foreground_process_name()` tags each entry.
+- Settings window sections: Text clean-up (6 toggles), AI tidy-up (on/off + light/standard), History (toggle + Clear history), When idle (idle unload + silence peak).
+- Verified: `cargo test` 21 test binaries green (0 failures), zero warnings; in-tree e2e `cargo test --test test_audio -- --ignored` transcribes the check WAV through ggml-tiny.en.
+- Release exe rebuilt and screenshotted (PrintWindow under the desktop lock): work\reports\2026-10-19-fd-rust-dictation-full.png, -settings-full.png, -settings-full-2.png, -settings-full-3.png. No stray processes left.
+- src\freedictate untouched — verified via `git status --porcelain` before committing.
+
 ## Next
 
-1. Commit autostart.rs + README + test_autostart once its helper reports (lib.rs already declares `pub mod autostart;`, so HEAD needs that file).
-2. Wire textproc into engine run_take (engine/mod.rs "Text clean-up (textproc) is not ported").
-3. Add a "Start with Windows" checkbox to the settings page.
-4. audio/mod.rs belongs to the fd-exclusive thread (WASAPI exclusive); it commits its own work.
-5. Not tested: a real dictation with mic + downloaded model.
+1. README refresh for the Rust crate (fd-docs helper, in flight at the time of this entry).
+2. Honest gaps: `replacements` config is not parsed into the textproc call (engine passes an empty list); WASAPI exclusive capture is not reachable through cpal 0.18; a live-mic end-to-end dictation is not scripted (needs a person speaking).
+3. Push the branch to origin once the README lands.
