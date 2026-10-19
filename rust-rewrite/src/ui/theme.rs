@@ -266,6 +266,23 @@ pub fn to_iced(p: &Palette) -> iced::Theme {
     )
 }
 
+/// The variant for a window with a live system backdrop: the clear colour
+/// goes fully transparent so Mica/Acrylic show through, while painted
+/// surfaces keep their own opaque roles.
+pub fn to_iced_transparent(p: &Palette) -> iced::Theme {
+    iced::Theme::custom(
+        p.name,
+        iced::theme::Palette {
+            background: Color { a: 0.0, ..p.bg },
+            text: p.text,
+            primary: p.accent,
+            success: p.ok,
+            warning: p.warn,
+            danger: p.danger,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

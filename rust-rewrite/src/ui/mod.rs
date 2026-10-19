@@ -16,18 +16,14 @@ use serde_json::{json, Value};
 
 use crate::config::{Config, DEFAULTS};
 use crate::engine::Engine;
-use iced::widget::{
-    button, checkbox, column, pick_list, row, scrollable, slider, text, text_input,
-};
-use iced::Length;
 
 pub(crate) mod chrome;
 mod options;
 pub(crate) mod pages;
 pub(crate) mod theme;
 pub(crate) mod widgets;
-
-use options::Choice;
+mod overlay;
+mod icons;
 
 /// Events that reach the subscription while `run` is active.
 static EVENT_QUEUE: OnceLock<Mutex<std::sync::mpsc::Receiver<(String, Value)>>> = OnceLock::new();
@@ -168,6 +164,7 @@ impl App {
             Message::Tick => {
                 self.refresh_downloaded();
                 self.refresh_mics();
+                self.refresh_geometry();
             }
             Message::Engine(_kind, _data) => {
                 // Model and state events already carry the facts; both the
@@ -395,8 +392,27 @@ impl App {
         self.mics = crate::audio::input_devices();
     }
 
+    /// Persist the window rect on change, so a restart reopens where the
+    /// user left it. GetWindowRect is microseconds; doing it inline on the
+    /// tick keeps this off any window-event plumbing iced does not expose.
+    fn refresh_geometry(&mut self) {
+        if let Some((x, y, w, h)) = chrome::current_geometry() {
+            let next = format!("{x},{y},{w},{h}");
+            if self.cfg.string_value("window_geometry") != next {
+                self.apply(json!({ "window_geometry": next }));
+            }
+        }
+    }
+
+    /// The iced theme: opaque while no material is active, transparent
+    /// clear colour when Mica/Acrylic/blur runs behind the window.
     fn theme(&self) -> iced::Theme {
-        theme::to_iced(&self.palette())
+        let p = self.palette();
+        if chrome::material_active(&self.cfg.string_value("backdrop")) {
+            theme::to_iced_transparent(&p)
+        } else {
+            theme::to_iced(&p)
+        }
     }
 
     fn subscription(&self) -> iced::Subscription<Message> {
@@ -412,451 +428,8 @@ impl App {
         }
     }
 
-    fn dictation_view(&self) -> Element<'_> {
-        let hotkey = crate::hotkeys::label(&self.cfg.string_value("hotkey"));
-        let mut items: Vec<Element> = Vec::new();
-        items.push(text("Dictation").size(22).into());
-        items.push(text(self.engine.status_text()).into());
-        items.push(
-            button(if self.paused { "Resume" } else { "Pause" })
-                .on_press(Message::TogglePause)
-                .into(),
-        );
-        items.push(
-            text(format!(
-                "Hold {hotkey} anywhere to dictate. The text arrives where the cursor is."
-            ))
-            .into(),
-        );
-        items.push(
-            button("Open Settings")
-                .on_press(Message::OpenSettings)
-                .into(),
-        );
-        column(items).spacing(10).width(Length::Fill).into()
-    }
-
-    fn settings_view(&self) -> Element<'_> {
-        let mut items: Vec<Element> = Vec::new();
-        items.push(text("Settings").size(22).into());
-
-        // Shortcut
-        let valid = crate::hotkeys::is_valid(&self.hotkey_draft);
-        items.push(heading("Shortcut"));
-        items.push(
-            text_input("Ctrl + Win", &self.hotkey_draft)
-                .on_input(Message::HotkeyChanged)
-                .width(220.0)
-                .into(),
-        );
-        let warning = crate::hotkeys::warning(&self.hotkey_draft);
-        if !valid {
-            items.push(caption(
-                "Not a valid shortcut. Use key + key, for example Ctrl + Win.",
-            ));
-        } else {
-            items.push(caption(&crate::hotkeys::label(&self.hotkey_draft)));
-        }
-        if !warning.is_empty() {
-            items.push(caption(&warning));
-        }
-
-        // Hotkey trigger mode
-        items.push(heading("Hotkey trigger mode"));
-        let modes = options::trigger_modes();
-        let mode = options::select(&modes, &self.cfg.string_value("hotkey_mode")).cloned();
-        items.push(pick_list(modes, mode, |c: Choice| Message::TriggerModeSelected(c.key)).into());
-
-        // Microphone
-        items.push(heading("Microphone"));
-        let mics = self.mic_options();
-        let current = self.cfg.string_value("input_device");
-        let selected = mic_choice(&mics, &current);
-        items.push(
-            pick_list(mics.clone(), Some(selected.clone()), |c: Choice| {
-                Message::MicSelected(c.key)
-            })
-            .into(),
-        );
-        items.push(caption(
-            "System default picks the microphone Windows is using.",
-        ));
-
-        // Sounds
-        items.push(heading("Sounds"));
-        items.push(
-            checkbox(self.cfg.bool_value("sounds"))
-                .label("Play sounds")
-                .on_toggle(Message::SoundsToggled)
-                .into(),
-        );
-        let volume = self
-            .sound_volume
-            .unwrap_or(self.cfg.float_value("sound_volume") as f32);
-        items.push(volume_caption(volume));
-        items.push(
-            slider(0.0..=100.0, volume, Message::SoundVolumeChanged)
-                .on_release(Message::SoundVolumeReleased)
-                .width(220.0)
-                .into(),
-        );
-        items.push(caption(
-            "A short tone when recording starts and stops, and when the text arrives.",
-        ));
-
-        // Speech model
-        items.push(heading("Speech model"));
-        let models: Vec<Choice> = crate::transcribe::CATALOG
-            .iter()
-            .map(|m| Choice {
-                key: m.name.to_string(),
-                label: m.title.to_string(),
-            })
-            .collect();
-        let model_key = self.cfg.string_value("model");
-        if let Some(choice) = options::select(&models, &model_key).cloned() {
-            items.push(
-                pick_list(models.clone(), Some(choice.clone()), |c| {
-                    Message::ModelSelected(c.key)
-                })
-                .into(),
-            );
-            items.push(caption(&choice.label));
-        }
-        items.push(caption(&self.downloaded_caption()));
-        items.push(
-            row([
-                button("Download model")
-                    .on_press(Message::DownloadModel)
-                    .into(),
-                button("Drop the model now")
-                    .on_press(Message::DropModel)
-                    .into(),
-            ])
-            .spacing(10)
-            .into(),
-        );
-        let progress = self.model_progress();
-        if !progress.is_empty() {
-            items.push(caption(&progress));
-        }
-
-        // Language
-        items.push(heading("Language"));
-        let languages = options::choices(options::LANGUAGES);
-        let language = self.cfg.string_value("language");
-        if let Some(choice) = options::select(&languages, &language).cloned() {
-            items.push(
-                pick_list(languages, Some(choice.clone()), |c| {
-                    Message::LanguageSelected(c.key)
-                })
-                .into(),
-            );
-        }
-
-        // Output method
-        items.push(heading("Output method"));
-        let outputs = options::output_methods();
-        let output = self.cfg.string_value("output");
-        if let Some(choice) = options::select(&outputs, &output).cloned() {
-            items.push(
-                pick_list(outputs, Some(choice.clone()), |c| {
-                    Message::OutputSelected(c.key)
-                })
-                .into(),
-            );
-        }
-        items.push(
-            checkbox(self.cfg.bool_value("restore_clipboard"))
-                .label("Restore the clipboard afterwards")
-                .on_toggle(Message::RestoreClipboardToggled)
-                .into(),
-        );
-        items.push(checkbox(self.cfg.bool_value("trailing_space"))
-            .label("Add a space after")
-            .on_toggle(Message::TrailingSpaceToggled)
-            .into());
-        items.push(caption("So the next take doesn't run into this one."));
-
-        // Privacy
-        items.push(heading("Privacy"));
-        items.push(
-            checkbox(self.cfg.bool_value("mic_privacy_while_dictating"))
-                .label("Keep my mic private")
-                .on_toggle(Message::MicPrivacyToggled)
-                .into(),
-        );
-        let isolate = self.cfg.bool_value("isolate_output_while_dictating");
-        items.push(
-            checkbox(isolate)
-                .label("Mute other apps' sound")
-                .on_toggle(Message::IsolateToggled)
-                .into(),
-        );
-        // iced 0.14 pick lists have no disabled state, so the level menu
-        // only shows while the mute switch is on; the caption explains it.
-        if options::level_enabled(isolate) {
-            let level = self.cfg.number_value("isolate_output_level");
-            items.push(
-                pick_list(
-                    options::level_options(),
-                    Some(options::level_selected(level)),
-                    |c| Message::IsolateLevelSelected(c.key),
-                )
-                .into(),
-            );
-        } else {
-            items.push(caption(
-                "The level below only shows while Mute other apps' sound is on.",
-            ));
-            items.push(caption(options::level_menu_string(
-                self.cfg.number_value("isolate_output_level"),
-            )));
-        }
-        items.push(caption("These switches apply on the next take."));
-
-        // Text clean-up
-        items.push(heading("Text"));
-        let text_items = [
-            ("capitalize", "Capital letter at the start", ""),
-            ("end_punctuation", "Full stop at the end", "Adds one when the sentence has none."),
-            ("remove_fillers", "Remove um and uh", "Drops hesitation sounds. Words like \"like\" stay."),
-            ("remove_repeats", "Remove repeated words", "Turns \"the the\" or \"I want, I want to\" into one. Words people repeat on purpose, like \"really really\", stay."),
-            ("voice_commands", "Spoken punctuation and lists", "Say \"comma\", \"full stop\", \"question mark\", \"colon\", \"hyphen\", \"open bracket\", \"open quote\", \"dot point\", \"new line\" or \"new paragraph\". Say \"literal\" first to type the word instead."),
-            ("auto_submit", "\"Submit\" presses Enter", "End a take with the word \"submit\" and it's removed and Enter is sent — handy for chat boxes. Off by default, and it stays off when output is clipboard-only."),
-        ];
-        for (key, label, note) in text_items {
-            let val = self.cfg.bool_value(key);
-            items.push(checkbox(val).label(label).on_toggle(move |on| Message::TextCleanupToggled(key.to_string(), on)).into());
-            if !note.is_empty() {
-                items.push(caption(note));
-            }
-        }
-
-        // AI tidy-up
-        items.push(heading("AI tidy-up"));
-        let ai_on = self.cfg.bool_value("ai_tidy");
-        items.push(checkbox(ai_on).label("Tidy with AI").on_toggle(|on| Message::AiTidyToggled(on)).into());
-        items.push(caption("A small writing model on this PC rewrites each take after it's transcribed. Nothing leaves your PC."));
-        let ai_models = options::choices(&[("light", "Light (faster)"), ("standard", "Standard (more accurate)")]);
-        let ai_model_key = self.cfg.string_value("ai_model");
-        let ai_default = options::Choice { key: "standard".to_string(), label: "Standard (more accurate)".to_string() };
-        let ai_sel = options::select(&ai_models, &ai_model_key).cloned().unwrap_or(ai_default);
-        items.push(pick_list(ai_models.clone(), Some(ai_sel), |c: Choice| Message::AiModelSelected(c.key)).into());
-
-        // History
-        items.push(heading("History"));
-        let hist_on = self.cfg.bool_value("history_enabled");
-        items.push(checkbox(hist_on).label("Save my dictations").on_toggle(|on| Message::HistoryToggled(on)).into());
-        items.push(caption("Stored only on this PC."));
-        items.push(
-            button("Clear history").on_press(Message::ClearHistory).into(),
-        );
-
-        // When idle
-        items.push(heading("When idle"));
-        items.push(
-            checkbox(self.cfg.bool_value("idle_unload"))
-                .label("Free the model when idle")
-                .on_toggle(Message::IdleUnloadToggled)
-                .into(),
-        );
-        items.push(caption("The model reloads on your next hotkey press."));
-        let peak = self
-            .silence_peak
-            .unwrap_or(self.cfg.float_value("silence_peak") as f32);
-        items.push(
-            slider(0.0..=0.2, peak, Message::SilencePeakChanged)
-                .on_release(Message::SilencePeakReleased)
-                .width(220.0)
-                .into(),
-        );
-        items.push(caption("Quieter than this counts as silence."));
-
-        // Graphics card or processor
-        items.push(heading("Graphics card or processor"));
-        let devices = options::devices();
-        let device = self.cfg.string_value("device");
-        if let Some(choice) = options::select(&devices, &device).cloned() {
-            items.push(
-                pick_list(devices, Some(choice.clone()), |c| {
-                    Message::DeviceSelected(c.key)
-                })
-                .into(),
-            );
-        }
-        let compute = options::compute_types();
-        let compute_key = self.cfg.string_value("compute_type");
-        if let Some(choice) = options::select(&compute, &compute_key).cloned() {
-            items.push(
-                pick_list(compute, Some(choice.clone()), |c| {
-                    Message::ComputeTypeSelected(c.key)
-                })
-                .into(),
-            );
-        }
-        let threads = self
-            .cpu_threads
-            .unwrap_or(self.cfg.float_value("cpu_threads") as f32);
-        items.push(caption_cpu(threads));
-        items.push(
-            slider(0.0..=64.0, threads, Message::CpuThreadsChanged)
-                .on_release(Message::CpuThreadsReleased)
-                .width(220.0)
-                .into(),
-        );
-
-        // Engine tuning
-        items.push(heading("Engine tuning"));
-        let seconds = self
-            .max_seconds
-            .unwrap_or(self.cfg.float_value("max_seconds") as f32);
-        items.push(caption_max(seconds));
-        items.push(
-            slider(10.0..=3600.0, seconds, Message::MaxSecondsChanged)
-                .on_release(Message::MaxSecondsReleased)
-                .width(220.0)
-                .into(),
-        );
-        let beam = self
-            .beam_size
-            .unwrap_or(self.cfg.float_value("beam_size") as f32);
-        items.push(caption_beam(beam));
-        items.push(
-            slider(1.0..=10.0, beam, Message::BeamSizeChanged)
-                .on_release(Message::BeamSizeReleased)
-                .width(220.0)
-                .into(),
-        );
-        items.push(caption("Defaults suit most people."));
-
-        // Startup
-        items.push(heading("Startup"));
-        items.push(
-            checkbox(self.start_with_windows)
-                .label("Start with Windows")
-                .on_toggle(Message::StartWithWindowsToggled)
-                .into(),
-        );
-
-        // Window buttons
-        items.push(
-            row([
-                button("Back").on_press(Message::CloseSettings).into(),
-                button("Reset").on_press(Message::Reset).into(),
-            ])
-            .spacing(10)
-            .into(),
-        );
-
-        let settings_column = column(items).spacing(8).width(Length::Fill);
-        scrollable(settings_column).into()
-    }
-
-    fn mic_options(&self) -> Vec<Choice> {
-        let mut out = vec![Choice {
-            key: String::new(),
-            label: "System default".to_string(),
-        }];
-        for device in &self.mics {
-            out.push(Choice {
-                key: device.name.clone(),
-                label: device.label.clone(),
-            });
-        }
-        let saved = self.cfg.string_value("input_device");
-        if !saved.is_empty() && !out.iter().any(|c| c.key == saved) {
-            out.push(Choice {
-                key: saved.clone(),
-                label: format!("{saved} (not connected)"),
-            });
-        }
-        out
-    }
-
-    fn downloaded_caption(&self) -> String {
-        let mut titles: Vec<&'static str> = Vec::new();
-        for info in crate::transcribe::CATALOG {
-            if self.downloaded.iter().any(|name| name == info.name) {
-                titles.push(info.title);
-            }
-        }
-        if titles.is_empty() {
-            "No models downloaded yet; the first take downloads one.".to_string()
-        } else {
-            format!("Downloaded on this PC: {}", titles.join(", "))
-        }
-    }
-
-    /// The line under the model buttons, from engine.model_status().
-    fn model_progress(&self) -> String {
-        let (status, _active, done, total) = self.engine.model_status();
-        if status == "downloading" && total > 0 {
-            format!(
-                "Downloading the speech model: {} of {}",
-                mb(done),
-                mb(total)
-            )
-        } else {
-            // status_text() carries everything else.
-            String::new()
-        }
-    }
 }
 
-fn heading(label: &str) -> Element<'static> {
-    text(label.to_string()).size(17).into()
-}
-
-fn caption(label: &str) -> Element<'static> {
-    text(label.to_string()).size(12).into()
-}
-
-fn volume_caption(volume: f32) -> Element<'static> {
-    text(format!("Sound volume: {}%", volume.round() as u32))
-        .size(13)
-        .into()
-}
-
-fn caption_cpu(threads: f32) -> Element<'static> {
-    text(format!("Processor cores used: {}", threads.round() as u32))
-        .size(13)
-        .into()
-}
-
-fn caption_max(seconds: f32) -> Element<'static> {
-    text(format!(
-        "Longest take: {} (10 seconds to 1 hour)",
-        seconds.round() as u32
-    ))
-    .size(13)
-    .into()
-}
-
-fn caption_beam(beam: f32) -> Element<'static> {
-    text(format!(
-        "Search width: {} (higher is slightly more accurate and slower)",
-        beam.round() as u32
-    ))
-    .size(13)
-    .into()
-}
-
-fn mic_choice(mics: &[Choice], saved: &str) -> Choice {
-    options::select(mics, saved).cloned().unwrap_or(Choice {
-        key: String::new(),
-        label: "System default".to_string(),
-    })
-}
-
-fn mb(bytes: u64) -> String {
-    let size = bytes as f64 / 1_000_000.0;
-    if size >= 10.0 {
-        format!("{size:.0} MB")
-    } else {
-        format!("{size:.1} MB")
-    }
-}
 
 /// Entry point the main.rs binary calls. Boots the config, starts the engine
 /// and opens the window; tests never get here.
@@ -881,7 +454,10 @@ pub fn run(cfg_path: Option<std::path::PathBuf>) -> iced::Result {
     let boot_palette = theme::effective(&cfg.string_value("theme"), &cfg.string_value("accent_source"));
     chrome::request(boot_palette, cfg.string_value("backdrop"));
     let font_family = cfg.string_value("font");
-    iced::application(
+    // Reopen where the user left the window; the default matches the
+    // original app (settings.py resizes to 960x700 and centers it).
+    let geometry = chrome::parse_geometry(&cfg.string_value("window_geometry"));
+    let builder = iced::application(
         move || {
             state
                 .lock()
@@ -897,11 +473,23 @@ pub fn run(cfg_path: Option<std::path::PathBuf>) -> iced::Result {
     .default_font(iced::Font::with_name(std::boxed::Box::leak(font_family.into_boxed_str())))
     .subscription(App::subscription)
     .window(iced::window::Settings {
-        size: iced::Size::new(640.0, 560.0),
+        // Transparent so the DWM backdrop (Mica/Acrylic/blur) can read
+        // through; the palette paints every surface itself when the
+        // backdrop is solid or none.
+        transparent: true,
+        size: match geometry {
+            Some((_, _, w, h)) => iced::Size::new(w as f32, h as f32),
+            None => iced::Size::new(960.0, 700.0),
+        },
+        position: match geometry {
+            Some((x, y, _, _)) => {
+                iced::window::Position::Specific(iced::Point::new(x as f32, y as f32))
+            }
+            None => iced::window::Position::Centered,
+        },
         ..iced::window::Settings::default()
-    })
-    .centered()
-    .run()
+    });
+    builder.run()
 }
 
 /// The subscription: drain the engine queue and raise Tick every 500 ms.

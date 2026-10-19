@@ -10,10 +10,14 @@ cpal = "0.18"
 rubato = "5"
 whisper-rs = "0.16"
 ureq = "3"
-iced = { version = "0.14", features = ["svg"] }
+# CPU rendering (tiny-skia): a dictation utility has no shader needs, and a
+# wedged GPU driver must never block the window from opening.
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "svg", "crisp", "web-colors", "thread-pool"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
     "Win32_System_Registry",
     "Win32_Media_Audio",
     "Win32_Media_Multimedia",
@@ -36,3 +40,8 @@ sha2 = "0.10"
 
 [dev-dependencies]
 hound = "3.5"
+
+[build-dependencies]
+# Embeds assets/freedictate.ico as the exe/taskbar icon, like the Python
+# app's write_ico output in the installer.
+winresource = "0.1"

@@ -34,15 +34,6 @@ pub fn select<'a>(options: &'a [Choice], key: &str) -> Option<&'a Choice> {
     options.iter().find(|c| c.key == key)
 }
 
-/// How the shortcut behaves, as models.py and config.py spell it.
-pub fn trigger_modes() -> Vec<Choice> {
-    choices(&[
-        ("hold", "Hold"),
-        ("toggle", "Press to start and stop"),
-        ("both", "Both"),
-    ])
-}
-
 /// Output methods, same keys as config.py CHOICES.
 pub fn output_methods() -> Vec<Choice> {
     choices(&[
@@ -171,11 +162,6 @@ pub fn level_selected(level: u32) -> Choice {
         key: key.to_string(),
         label: level_menu_string(level).to_string(),
     }
-}
-
-/// The level menu is only usable while the mute switch is on.
-pub fn level_enabled(mute_on: bool) -> bool {
-    mute_on
 }
 
 #[cfg(test)]

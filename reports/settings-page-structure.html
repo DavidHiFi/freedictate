@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FreeDictate settings page — rebuilt structure</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --surface: #181825;
+    --field: #11111b;
+    --hover: #313244;
+    --line: #313244;
+    --text: #cdd6f4;
+    --sub: #bac2de;
+    --accent: #89b4fa;
+    --on-accent: #11111b;
+    --warn: #f9e2af;
+    --danger: #f38ba8;
+    --ok: #a6e3a1;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    color: var(--text);
+    background: #11111b;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .wrap { padding: 0 0 8px; }
+  .head { padding: 0 4px 14px; }
+  .head h1 { font-size: 19px; font-weight: 650; margin: 0 0 4px; letter-spacing: .1px; }
+  .head p { margin: 0; color: var(--sub); font-size: 13px; }
+  .head code { color: var(--accent); font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+
+  /* the app window mock */
+  .app {
+    display: flex;
+    gap: 12px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius, 10px);
+    padding: 14px;
+    align-items: stretch;
+  }
+  .rail { width: 168px; flex: 0 0 168px; display: flex; flex-direction: column; gap: 4px; }
+  .status-card {
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 6px;
+  }
+  .status-line { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); flex: 0 0 10px; }
+  .status-sub { color: var(--sub); font-size: 12px; margin-top: 3px; }
+  .btn {
+    display: inline-block;
+    background: var(--field);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 4px 12px;
+    font-size: 13px;
+    line-height: 1.3;
+  }
+  .btn.pause { margin-top: 8px; }
+  .nav {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 6px; font-size: 13.5px; color: var(--text);
+  }
+  .nav .glyph { color: var(--sub); font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+  .nav.on { background: var(--surface); color: var(--accent); font-weight: 600; }
+  .nav.on .glyph { color: var(--accent); }
+  .ver { margin-top: auto; color: var(--sub); font-size: 12px; padding-left: 6px; }
+
+  .content { flex: 1 1 auto; min-width: 0; }
+  .page-title { font-size: 20px; font-weight: 650; margin: 0 0 8px; }
+  .banner {
+    background: rgba(137,180,250,.16);
+    border: 1px solid rgba(137,180,250,.45);
+    border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 12.5px; margin-bottom: 10px;
+  }
+  .card {
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+  }
+  .card h3 { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
+  .card .card-sub { color: var(--sub); font-size: 12.5px; margin: 0 0 8px; }
+  .row { padding: 9px 0; border-top: 1px solid rgba(49,50,68,.75); }
+  .row:first-of-type { border-top: 0; }
+  .row .t { font-size: 14px; font-weight: 600; }
+  .row .d { color: var(--sub); font-size: 12.5px; margin-top: 1px; }
+  .row .n { font-size: 12.5px; margin-top: 2px; }
+  .n.warn { color: var(--warn); }
+  .n.ok { color: var(--ok); }
+  .n.danger { color: var(--danger); }
+  .row .ctl { margin-top: 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .field {
+    background: var(--field); border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text); font-size: 12.5px; padding: 4px 10px; min-width: 120px;
+  }
+  .field.wide { min-width: 190px; }
+  .seg { display: inline-flex; }
+  .seg span {
+    border: 1px solid var(--line); background: var(--field); color: var(--text);
+    font-size: 12.5px; padding: 3px 10px; margin-left: -1px; border-radius: 0;
+  }
+  .seg span:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+  .seg span:last-child { border-radius: 0 6px 6px 0; }
+  .seg span.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .tog { width: 40px; height: 20px; border-radius: 10px; background: var(--accent); position: relative; }
+  .tog::after { content: ""; position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--on-accent); }
+  .tog.off { background: transparent; border: 1px solid var(--line); }
+  .tog.off::after { right: auto; left: 2px; background: var(--sub); }
+  .slider { width: 190px; height: 4px; border-radius: 2px; background: var(--line); position: relative; }
+  .slider i { position: absolute; left: 0; top: 0; bottom: 0; width: 62%; background: var(--accent); border-radius: 2px; }
+  .slider b { position: absolute; top: -5px; left: 58%; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); }
+  .meter { width: 190px; height: 6px; border-radius: 3px; background: var(--line); }
+  .muted { color: var(--sub); }
+
+  .index { margin-top: 18px; }
+  .index h2 { font-size: 15px; font-weight: 650; margin: 0 0 8px; }
+  .sect {
+    display: grid; grid-template-columns: 150px 1fr; gap: 10px;
+    padding: 9px 0; border-top: 1px solid rgba(49,50,68,.75);
+  }
+  .sect:first-of-type { border-top: 0; }
+  .sect .k { color: var(--accent); font-size: 12.5px; font-family: ui-monospace, Consolas, monospace; }
+  .sect .k span { color: var(--sub); display: block; font-family: inherit; }
+  .sect ul { margin: 0; padding-left: 16px; color: var(--sub); font-size: 12.5px; columns: 2; column-gap: 18px; }
+  .sect li { break-inside: avoid; margin-bottom: 1px; }
+  .note { margin-top: 16px; padding: 12px 14px; background: var(--surface); border-radius: 8px; font-size: 12.5px; color: var(--sub); }
+  .note b { color: var(--text); }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 0; padding: 0; list-style: none; }
+  .stats li { background: var(--surface); border-radius: 8px; padding: 8px 12px; font-size: 12.5px; color: var(--sub); }
+  .stats b { color: var(--ok); font-weight: 650; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <h1>FreeDictate — settings page rebuilt on the Fluent widget set</h1>
+    <p><code>rust-rewrite/src/ui/pages/settings.rs</code> — the shim that delegated to the legacy view is gone. Structure below is read off the new file; the app binary was not run (this slice is cargo-only).</p>
+  </div>
+
+  <ul class="stats">
+    <li><b>cargo check</b> pass, no warnings from the file</li>
+    <li><b>cargo test</b> 21 binaries, 160 passed, 0 failed, 18 ignored</li>
+    <li><b>41</b> settings messages bound, none invented</li>
+    <li><b>7</b> sections, Python order and labels</li>
+  </ul>
+
+  <div class="app">
+    <div class="rail">
+      <div class="status-card">
+        <div class="status-line"><span class="dot"></span><span>Ready. Hold Ctrl + Win to dictate</span></div>
+        <div class="status-sub">models unloaded</div>
+        <span class="btn pause">Pause</span>
+      </div>
+      <div class="nav on"><span class="glyph">mic</span>Dictation</div>
+      <div class="nav"><span class="glyph">cpu</span>Speech model</div>
+      <div class="nav"><span class="glyph">text</span>Text and pasting</div>
+      <div class="nav"><span class="glyph">palette</span>Appearance</div>
+      <div class="nav"><span class="glyph">clock</span>History</div>
+      <div class="nav"><span class="glyph">sliders</span>General</div>
+      <div class="nav"><span class="glyph">info</span>About</div>
+      <div class="ver">Version 3.6.1</div>
+    </div>
+
+    <div class="content">
+      <div class="page-title">Dictation</div>
+
+      <div class="banner"><b>Welcome to FreeDictate.</b> Click where you want text, hold <b>Ctrl + Win</b>, talk, and let go. The Small speech model (487 MB) downloads once, then everything runs offline on this PC.</div>
+
+      <div class="card">
+        <h3>Shortcut</h3>
+        <div class="row">
+          <div class="t">Dictation shortcut</div>
+          <div class="d">Click the box, then press the keys you want.</div>
+          <div class="n">Ctrl + Win</div>
+          <div class="ctl"><span class="field wide">Ctrl + Win</span><span class="btn">Reset</span></div>
+        </div>
+        <div class="row">
+          <div class="t">Stop key</div>
+          <div class="d">Stops a take at any point: while you talk, or while it's being written out. Click the box, then press the key you want.</div>
+          <div class="ctl"><span class="field">Esc</span></div>
+        </div>
+        <div class="row">
+          <div class="t">How the shortcut works</div>
+          <div class="d">Hold the shortcut while you talk. Let go to finish.</div>
+          <div class="ctl"><span class="seg"><span class="on">Hold</span><span>Press to start and stop</span><span>Both</span></span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Microphone</h3>
+        <div class="row">
+          <div class="t">Microphone</div>
+          <div class="d">System default picks the microphone Windows is using.</div>
+          <div class="ctl"><span class="field wide">System default</span></div>
+        </div>
+        <div class="row">
+          <div class="t">Test your microphone</div>
+          <div class="d">Speak normally. The bar should reach about halfway.</div>
+          <div class="ctl"><span class="meter"></span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Recording</h3>
+        <div class="row">
+          <div class="t">Language</div>
+          <div class="ctl"><span class="field wide">Detect automatically</span></div>
+        </div>
+        <div class="row">
+          <div class="t">Words it should know</div>
+          <div class="d">Helps with names and terms it would otherwise misspell.</div>
+          <div class="ctl"><span class="field wide">Names, separated by commas</span></div>
+        </div>
+        <div class="row">
+          <div class="t">Longest take</div>
+          <div class="d">A take this long finishes by itself.</div>
+          <div class="n">Longest take: 600 (10 seconds to 1 hour)</div>
+          <div class="ctl"><span class="slider"><i></i><b></b></span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>While I dictate</h3>
+        <div class="card-sub">These switch on when a take starts and back off when it ends.</div>
+        <div class="row">
+          <div class="t">Keep my mic private</div>
+          <div class="d">Other apps, like calls, can't use the mic while I dictate. If the mic is busy, dictation still works and they keep it.</div>
+          <div class="ctl"><span class="tog off"></span></div>
+        </div>
+        <div class="row">
+          <div class="t">Mute other apps' sound</div>
+          <div class="d">Other apps go quiet while I dictate and come back when I stop. Free Dictate's beeps still play.</div>
+          <div class="n">These switches apply on the next take.</div>
+          <div class="ctl"><span class="tog off"></span></div>
+        </div>
+        <div class="row">
+          <div class="t">What other apps do</div>
+          <div class="d">Only applies while the row above is on.</div>
+          <div class="n warn">The level below only shows while Mute other apps' sound is on.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Feedback</h3>
+        <div class="row">
+          <div class="t">Sounds</div>
+          <div class="d">A short tone when recording starts and stops, and when the text arrives.</div>
+          <div class="ctl"><span class="tog"></span></div>
+        </div>
+        <div class="row">
+          <div class="t">Sound volume</div>
+          <div class="n">Sound volume: 50%</div>
+          <div class="ctl"><span class="slider"><i style="width:50%"></i><b style="left:46%"></b></span></div>
+        </div>
+        <div class="row">
+          <div class="t">Recording bar</div>
+          <div class="d">A small bar on screen while it listens and transcribes.</div>
+          <div class="ctl"><span class="field">On</span></div>
+        </div>
+      </div>
+
+      <span class="btn">Back</span>
+    </div>
+  </div>
+
+  <div class="index">
+    <h2>Every section and every row</h2>
+
+    <div class="sect">
+      <div class="k">general<span>mic · Dictation</span></div>
+      <ul>
+        <li>Dictation shortcut</li><li>Stop key</li><li>How the shortcut works</li>
+        <li>Microphone</li><li>Test your microphone</li><li>Language</li>
+        <li>Words it should know</li><li>Stop when you go quiet</li><li>Longest take</li>
+        <li>Keep my mic private</li><li>Mute other apps' sound</li><li>What other apps do</li>
+        <li>Sounds</li><li>Sound volume</li><li>Recording bar</li><li>Bar position</li>
+        <li>Bar material</li><li>Show the timer</li>
+      </ul>
+    </div>
+
+    <div class="sect">
+      <div class="k">models<span>cpu · Speech model</span></div>
+      <ul>
+        <li>Speech model</li><li>Model files</li><li>GPU acceleration</li>
+        <li>Run the model on</li><li>Free graphics memory when idle</li><li>Keep models loaded for</li>
+        <li>Silence threshold</li><li>Precision</li><li>Search width</li>
+        <li>Limit processor cores</li><li>Processor cores</li><li>Skip silent parts</li>
+      </ul>
+    </div>
+
+    <div class="sect">
+      <div class="k">text<span>text · Text and pasting</span></div>
+      <ul>
+        <li>How the text arrives</li><li>Keep my clipboard</li><li>Add a space after</li>
+        <li>Capital letter at the start</li><li>Full stop at the end</li><li>Remove um and uh</li>
+        <li>Remove repeated words</li><li>Spoken punctuation and lists</li><li>"Submit" presses Enter</li>
+        <li>Tidy with AI</li><li>Writing model</li><li>Replacements</li>
+      </ul>
+    </div>
+
+    <div class="sect">
+      <div class="k">look<span>palette · Appearance</span></div>
+      <ul>
+        <li>Theme</li><li>Accent colour</li><li>Font</li>
+        <li>Material</li><li>Tint</li><li>Keep the effect in the background</li>
+        <li>Title bar</li><li>Reduce motion</li>
+      </ul>
+    </div>
+
+    <div class="sect">
+      <div class="k">history<span>clock · History</span></div>
+      <ul>
+        <li>Clear all</li><li>Save my dictations</li><li>Delete dictations older than</li>
+      </ul>
+    </div>
+
+    <div class="sect">
+      <div class="k">startup<span>sliders · General</span></div>
+      <ul>
+        <li>Start with Windows</li><li>Run as administrator</li>
+        <li>Check for updates automatically</li><li>Include test versions</li><li>FreeDictate 3.6.1</li>
+        <li>Settings and history</li><li>Logs</li><li>Back up your settings</li><li>Reset all settings</li>
+      </ul>
+    </div>
+
+    <div class="sect">
+      <div class="k">about<span>info · About</span></div>
+      <ul>
+        <li>FreeDictate</li><li>Version 3.6.1</li><li>Project page</li>
+        <li>Report a problem</li><li>What's new</li><li>Built with</li>
+      </ul>
+    </div>
+
+    <div class="note">
+      <b>Read-only rows.</b> The Python page has a control the Rust message set has no variant for. The row is still shown with the Python wording and the current value as plain text, and the gap is listed in the report: the stop key, the vocabulary, the silence dropdown, the recording bar switches, the per-model library buttons, GPU support, the writing model buttons, the word replacements, tint, title bar, reduce motion, run as administrator, the update switches, open folder, export and import, the history search and list, and the About links. No message variant was invented.
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
