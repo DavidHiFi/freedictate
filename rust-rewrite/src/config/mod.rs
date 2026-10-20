@@ -60,6 +60,7 @@ pub const DEFAULTS: &str = r#"{
   "idle_seconds": 0,
   "first_run_done": false,
   "window_geometry": "",
+  "settings_section": "general",
   "window_page": "dictation"
 }"#;
 

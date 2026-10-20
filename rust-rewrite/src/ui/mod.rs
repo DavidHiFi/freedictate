@@ -136,7 +136,11 @@ impl App {
             Page::Dictation
         };
         let theme_name = cfg.string_value("theme");
-        let settings_section = "general".to_string();
+        // Reopen the settings window on the section last opened.
+        let settings_section = {
+            let saved = cfg.string_value("settings_section");
+            if saved.is_empty() { "general".to_string() } else { saved }
+        };
         let mut app = App {
             cfg,
             engine,
@@ -313,7 +317,11 @@ impl App {
                 self.refresh_chrome();
             }
             Message::SettingsSection(section) => {
-                self.settings_section = section;
+                self.settings_section = section.clone();
+                // Save the open section for the next start; this is view
+                // state, so it does not need to reach the engine.
+                self.cfg.update(&json!({ "settings_section": section }));
+                let _ = self.cfg.save();
             }
             Message::AccentSourceSelected(source) => {
                 self.apply(json!({ "accent_source": source }));
@@ -365,6 +373,7 @@ impl App {
                 if matches!(
                     key.as_str(),
                     "first_run_done" | "window_geometry" | "window_page"
+                    | "settings_section"
                 ) {
                     continue;
                 }
