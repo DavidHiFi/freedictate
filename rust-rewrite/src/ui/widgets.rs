@@ -567,6 +567,68 @@ pub fn hotkey_edit<'a, T: Clone + 'a>(
         .into()
 }
 
+/// A plain styled text input: the same field box the hotkey editor uses,
+/// with a caller-chosen placeholder and width. Serves the vocabulary
+/// editor, the replacement rows and the history search box.
+pub fn text_field<'a, T: Clone + 'a>(
+    placeholder: &str,
+    value: &str,
+    width: f32,
+    on_input: impl Fn(String) -> T + Clone + 'a,
+    p: &Palette,
+) -> Elem<'a, T> {
+    let p = *p;
+    text_input(placeholder, value)
+        .on_input(move |s| on_input.clone()(s))
+        .size(14)
+        .width(Length::Fixed(width))
+        .padding(Padding::new(5.0).horizontal(9.0))
+        .style(move |_theme: &iced::Theme, status| {
+            let active = text_input::Style {
+                background: Background::Color(p.field),
+                border: Border {
+                    radius: 6.0.into(),
+                    width: 1.0,
+                    color: theme::with_alpha(p.line, 0.9),
+                },
+                placeholder: p.sub,
+                value: p.text,
+                selection: p.accent,
+                icon: p.sub,
+            };
+            match status {
+                text_input::Status::Active => active,
+                text_input::Status::Hovered => text_input::Style {
+                    border: Border {
+                        color: theme::with_alpha(p.line, 1.0),
+                        ..active.border
+                    },
+                    ..active
+                },
+                text_input::Status::Focused { .. } => text_input::Style {
+                    border: Border {
+                        color: p.accent,
+                        width: 2.0,
+                        ..active.border
+                    },
+                    ..active
+                },
+                text_input::Status::Disabled => text_input::Style {
+                    background: Background::Color(theme::with_alpha(p.field, 0.4)),
+                    value: theme::with_alpha(p.text, 0.4),
+                    placeholder: theme::with_alpha(p.text, 0.4),
+                    icon: theme::with_alpha(p.text, 0.4),
+                    border: Border {
+                        color: theme::with_alpha(p.line, 0.4),
+                        ..active.border
+                    },
+                    ..active
+                },
+            }
+        })
+        .into()
+}
+
 /// The styled slider: 4px rail, accent fill, round handle (QSlider). The
 /// on_release message fires when the drag ends, like the Python save-on-release.
 /// 
