@@ -81,6 +81,8 @@ pub(crate) enum Message {
     ThemeSelected(String),
     #[allow(dead_code)]
     SettingsSection(String),
+    /// Live mic level from the audio lock (0..1), emitted by ui::level.
+    Level(f32),
     #[allow(dead_code)]
     AccentSourceSelected(String),
     #[allow(dead_code)]
@@ -124,6 +126,8 @@ pub(crate) struct App {
     // settings nav section currently open.
     theme_name: String,
     settings_section: String,
+    // Live microphone level (0..1) pushed by the audio level subscription.
+    level: f32,
 }
 
 impl App {
@@ -157,6 +161,7 @@ impl App {
             start_with_windows: crate::autostart::is_enabled(),
             theme_name,
             settings_section,
+            level: 0.0,
         };
         app.refresh_downloaded();
         app.refresh_mics();
@@ -315,6 +320,9 @@ impl App {
                 self.theme_name = name.clone();
                 self.apply(json!({ "theme": name }));
                 self.refresh_chrome();
+            }
+            Message::Level(value) => {
+                self.level = value;
             }
             Message::SettingsSection(section) => {
                 self.settings_section = section.clone();
