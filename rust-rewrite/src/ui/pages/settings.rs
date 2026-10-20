@@ -761,8 +761,16 @@ fn models_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Keep models loaded for",
         "",
         &[],
-        Some(widgets::body(
-            &idle_seconds_label(cfg.number_value("idle_seconds")),
+        Some(combo_or_blank(
+            options::idle_seconds_options(),
+            options::select(
+                &options::idle_seconds_options(),
+                &cfg.number_value("idle_seconds").to_string(),
+            )
+            .cloned(),
+            // The dropdown hands back "0"/"30"/..; the message carries the
+            // seconds the config stores.
+            |key| Message::IdleSecondsSelected(key.parse().unwrap_or(0)),
             p,
         )),
         p,
@@ -826,39 +834,44 @@ fn models_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
     let threads = app
         .cpu_threads
         .unwrap_or(cfg.float_value("cpu_threads") as f32);
+    // The toggle hides and shows the slider row, exactly like Python's
+    // limit toggle (settings.py: show_row(cap_row, saved > 0)).
+    let capped = cfg.number_value("cpu_threads") > 0;
     rows.push(setting_row(
         "Limit processor cores",
         "Caps how many processor cores dictation may use. The lower you set it, the longer a take \
          takes, and the fewer CPU spikes and audio crackles. Six cores measured just as fast as \
          every core, with the rest of the machine left alone.",
         &[],
-        Some(on_off(cfg.number_value("cpu_threads") > 0, p)),
+        Some(widgets::toggle(capped, Message::CpuLimitToggled, p)),
         p,
     ));
-    rows.push(setting_row(
-        "Processor cores",
-        &format!(
-            "This PC has {} threads. Dictation waits longer for your words the lower this is.",
-            thread_count()
-        ),
-        &[Note::Plain(format!(
-            "Processor cores used: {}",
-            threads.round() as u32
-        ))],
-        Some(widgets::styled_slider(
-            0.0..=64.0,
-            threads,
-            Message::CpuThreadsChanged,
-            Message::CpuThreadsReleased,
+    if capped {
+        rows.push(setting_row(
+            "Processor cores",
+            &format!(
+                "This PC has {} threads. Dictation waits longer for your words the lower this is.",
+                thread_count()
+            ),
+            &[Note::Plain(format!(
+                "Processor cores used: {}",
+                threads.round() as u32
+            ))],
+            Some(widgets::styled_slider(
+                0.0..=64.0,
+                threads,
+                Message::CpuThreadsChanged,
+                Message::CpuThreadsReleased,
+                p,
+            )),
             p,
-        )),
-        p,
-    ));
+        ));
+    }
     rows.push(setting_row(
         "Skip silent parts",
         "Cuts pauses before transcribing. Faster, and stops made-up words in silence.",
         &[],
-        Some(on_off(cfg.bool_value("vad"), p)),
+        Some(widgets::toggle(cfg.bool_value("vad"), Message::VadToggled, p)),
         p,
     ));
     out.extend(section_card("Fine-tuning", "Defaults suit most people.", rows, p));
@@ -1153,7 +1166,11 @@ fn look_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Keep the effect in the background",
         "Windows normally swaps the material for a flat colour when you switch to another window.",
         &[],
-        Some(on_off(cfg.bool_value("backdrop_when_inactive"), p)),
+        Some(widgets::toggle(
+            cfg.bool_value("backdrop_when_inactive"),
+            Message::BackdropWhenInactiveToggled,
+            p,
+        )),
         p,
     ));
     rows.push(setting_row(
@@ -1314,8 +1331,16 @@ fn history_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Delete dictations older than",
         "",
         &[],
-        Some(widgets::body(
-            &history_days_label(cfg.number_value("history_days")),
+        Some(combo_or_blank(
+            options::history_days_options(),
+            options::select(
+                &options::history_days_options(),
+                &cfg.number_value("history_days").to_string(),
+            )
+            .cloned(),
+            // The dropdown hands back "0"/"1"/..; the message carries the
+            // days the config stores.
+            |key| Message::HistoryDaysSelected(key.parse().unwrap_or(0)),
             p,
         )),
         p,
@@ -1585,11 +1610,6 @@ fn setting_row<'a>(
         .into()
 }
 
-/// The value of a switch that this build cannot change yet.
-fn on_off<'a>(value: bool, p: &Palette) -> Element<'a> {
-    widgets::body(if value { "On" } else { "Off" }, p)
-}
-
 /// A dropdown for a saved value, or an empty label when the saved value is
 /// not in the list. The palette stays out of the closure on purpose: the
 /// element must outlive the borrow.
@@ -1663,21 +1683,6 @@ fn mb(bytes: u64) -> String {
     }
 }
 
-/// How long the models stay loaded.
-fn idle_seconds_label(seconds: u32) -> String {
-    match seconds {
-        0 => "Right after each take".to_string(),
-        30 => "30 seconds".to_string(),
-        60 => "1 minute".to_string(),
-        120 => "2 minutes".to_string(),
-        300 => "5 minutes".to_string(),
-        600 => "10 minutes".to_string(),
-        1800 => "30 minutes".to_string(),
-        3600 => "1 hour".to_string(),
-        other => format!("{other} seconds"),
-    }
-}
-
 /// The window material, in the Python page's words.
 fn material_desc(backdrop: &str) -> &'static str {
     match backdrop {
@@ -1687,19 +1692,6 @@ fn material_desc(backdrop: &str) -> &'static str {
         "blur" => "Blur: a clear, smooth blur of what's behind the window, without Acrylic's grain.",
         "solid" => "Solid: a plain theme colour.",
         _ => "None: a plain theme colour, with no material behind the window.",
-    }
-}
-
-/// How long the dictations are kept.
-fn history_days_label(days: u32) -> String {
-    match days {
-        0 => "Forever".to_string(),
-        365 => "1 year".to_string(),
-        90 => "90 days".to_string(),
-        30 => "30 days".to_string(),
-        7 => "7 days".to_string(),
-        1 => "1 day".to_string(),
-        other => format!("{other} days"),
     }
 }
 

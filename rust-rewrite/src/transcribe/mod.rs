@@ -18,6 +18,9 @@ pub struct ModelInfo {
 
 /// ggml models from the whisper.cpp Hugging Face repo. Sizes in MB are the
 /// file sizes users see before download; only these are wired up.
+/// The silero VAD model rides the same repo and naming (ggml-<name>.bin).
+pub const VAD_MODEL_NAME: &str = "silero-v5.1.2";
+
 pub const CATALOG: &[ModelInfo] = &[
     ModelInfo {
         name: "tiny.en",
@@ -181,6 +184,20 @@ impl Voice {
     }
 
     pub fn transcribe(&self, samples: &[f32], language: Option<&str>) -> Result<String, String> {
+        self.transcribe_with(samples, language, false, None)
+    }
+
+    /// Transcribe with whisper.cpp's VAD filter and initial prompt. `vad`
+    /// needs the silero model in the models folder (the settings row
+    /// downloads it on first use); without the file the take transcribes
+    /// unfiltered, exactly like the Python engine's vad_filter=False path.
+    pub fn transcribe_with(
+        &self,
+        samples: &[f32],
+        language: Option<&str>,
+        vad: bool,
+        vocabulary: Option<&str>,
+    ) -> Result<String, String> {
         let mut state = self
             .ctx
             .create_state()
@@ -190,6 +207,18 @@ impl Voice {
         params.set_language(language);
         params.set_translate(false);
         params.set_single_segment(false);
+        if let Some(prompt) = vocabulary {
+            params.set_initial_prompt(prompt);
+        }
+        if vad {
+            // enable_vad panics without a model path set first; only the
+            // existing silero file enables the filter.
+        let path = models_dir().join(format!("ggml-{}.bin", VAD_MODEL_NAME));
+            if path.is_file() {
+                params.set_vad_model_path(Some(path.to_string_lossy().as_ref()));
+                params.enable_vad(true);
+            }
+        }
         state
             .full(params, samples)
             .map_err(|e| format!("Transcription failed: {e}"))?;

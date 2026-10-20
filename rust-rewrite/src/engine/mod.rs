@@ -173,12 +173,18 @@ pub fn history_import(source: &std::path::Path) -> i64 {
     shared_history().import_legacy_log(source)
 }
 
+/// Drop entries older than `days` (0 = keep forever). Returns the rows
+/// removed; Python prunes daily on start, this runs on start and when the
+/// settings row changes.
+pub fn history_prune(days: u32) -> i64 {
+    shared_history().prune(days as i64)
+}
+
 /// Size-and-presence check over the model catalog: Python's verify.py
 /// recomputes sha256 per file with its saved manifest; the Rust port has
 /// no manifest yet, so this checks every catalog model exists and its
 /// byte size matches what the catalog promised.
-pub fn verify_models() -> String {
-    let entries = crate::transcribe::CATALOG;
+pub fn verify_models() -> String {    let entries = crate::transcribe::CATALOG;
     let mut present = 0usize;
     let mut absent: Vec<String> = Vec::new();
     let mut wrong_size: Vec<String> = Vec::new();
@@ -253,6 +259,21 @@ impl Engine {
         let _ = std::thread::Builder::new()
             .name("freedictate-idle".to_string())
             .spawn(move || idle_loop(shared));
+        // Python prunes old dictations on start; same one-shot here.
+        {
+            let days = {
+                let c = lock(&self.shared.cfg);
+                c.number_value("history_days")
+            };
+            std::thread::Builder::new()
+                .name("history-prune".to_string())
+                .spawn(move || {
+                    if days > 0 {
+                        history_prune(days);
+                    }
+                })
+                .ok();
+        }
         // Instant unload keeps nothing in memory between takes: start unloaded
         // and load on the first hotkey press. Recording starts before the
         // model finishes reloading, so no speech is lost.
@@ -1097,18 +1118,31 @@ fn run_take(shared: &Arc<EngineShared>, take: &TakeJob) {
         lang = "en".to_string();
     }
     let text = {
+        // The VAD filter and vocabulary prompt ride the same cfg read
+        // Python's engine used (vad_filter, initial_prompt).
+        let (vad, vocabulary) = {
+            let c = lock(&shared.cfg);
+            let vocab = c.string_value("vocabulary");
+            let vocab = vocab.trim().to_string();
+            (
+                c.bool_value("vad"),
+                if vocab.is_empty() { None } else { Some(vocab) },
+            )
+        };
         // Held for the decode; unload_model_now tries this lock first and
         // gives up rather than dropping a running transcription.
         let v = lock(&shared.voice);
         let _ = v.is_some();
         match v.as_ref() {
-            Some(voice) => voice.transcribe(
+            Some(voice) => voice.transcribe_with(
                 &take.samples,
                 if lang == "auto" {
                     None
                 } else {
                     Some(lang.as_str())
                 },
+                vad,
+                vocabulary.as_deref(),
             ),
             None => Err("The speech model was unloaded.".to_string()),
         }

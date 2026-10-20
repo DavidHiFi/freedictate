@@ -147,6 +147,21 @@ pub(crate) enum Message {
     UpdateCheckToggled(bool),
     UpdatePrereleasesToggled(bool),
     CheckUpdates,
+    /// "Keep models loaded for" (idle_seconds) and "Delete dictations
+    /// older than" (history_days), ported as combos like Python.
+    IdleSecondsSelected(u32),
+    HistoryDaysSelected(u32),
+    /// "Limit processor cores": on hands back the old core count (or a
+    /// gentle default), off stores 0, and the slider row shows or hides.
+    CpuLimitToggled(bool),
+    /// "Skip silent parts": whisper.cpp's VAD filter, model fetched on
+    /// first use like the Python side's model fetch.
+    VadToggled(bool),
+    /// "Keep the effect in the background": the DWM material drops to a
+    /// plain solid while the window is unfocused.
+    BackdropWhenInactiveToggled(bool),
+    /// Focus change pushed by the window-events subscription.
+    WindowFocus(bool),
     ExportHistory,
     ImportHistory,
     HistoryQueryChanged(String),
@@ -670,6 +685,80 @@ impl App {
                 crate::engine::history_delete(id);
                 self.refresh_history();
             }
+            Message::IdleSecondsSelected(seconds) => {
+                self.apply(json!({ "idle_seconds": seconds }));
+            }
+            Message::CpuLimitToggled(on) => {
+                // Python's limit toggle: on restores the previous cap (or
+                // six cores as the gentle default), off stores 0 (unlimited).
+                let value = if on {
+                    let cores =
+                        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
+                    self.cfg.float_value("cpu_threads").max(cores.min(6.0))
+                } else {
+                    0.0
+                };
+                self.apply(json!({ "cpu_threads": value }));
+            }
+            Message::HistoryDaysSelected(days) => {
+                self.apply(json!({ "history_days": days }));
+                // Python prunes on the daily cycle; the port also prunes
+                // once here so the row's effect is immediate.
+                std::thread::Builder::new()
+                    .name("history-prune-now".to_string())
+                    .spawn(move || {
+                        if days > 0 {
+                            crate::engine::history_prune(days);
+                        }
+                    })
+                    .ok();
+            }
+            Message::VadToggled(on) => {
+                self.apply(json!({ "vad": on }));
+                if on {
+                    // Fetch the silero model once; the next take uses it.
+                    std::thread::Builder::new()
+                        .name("vad-model".to_string())
+                        .spawn(|| {
+                            if crate::transcribe::local_path(crate::transcribe::VAD_MODEL_NAME)
+                                .is_some()
+                            {
+                                return;
+                            }
+                            let cancel = std::sync::atomic::AtomicBool::new(false);
+                            match crate::transcribe::download(
+                                crate::transcribe::VAD_MODEL_NAME,
+                                &|_, _| {},
+                                &cancel,
+                            ) {
+                                Ok(_) => publish_note(true, ""),
+                                Err(e) => publish_note(
+                                    true,
+                                    &format!("VAD model: {e} Takes stay unfiltered."),
+                                ),
+                            }
+                        })
+                        .ok();
+                }
+            }
+            Message::BackdropWhenInactiveToggled(on) => {
+                self.apply(json!({ "backdrop_when_inactive": on }));
+                // Going off restores the full material at once; going on
+                // takes effect at the next unfocus.
+                if !on {
+                    self.refresh_chrome();
+                }
+            }
+            Message::WindowFocus(focused) => {
+                // Keep the material only with focus, when the row wants
+                // that; every other case is the window's normal look.
+                let keep_when_inactive = self.cfg.bool_value("backdrop_when_inactive");
+                if focused || !keep_when_inactive {
+                    self.refresh_chrome();
+                } else {
+                    chrome::request(self.palette(), "solid".to_string());
+                }
+            }
         }
         task.unwrap_or_else(iced::Task::none)
     }
@@ -776,10 +865,13 @@ impl App {
 
     fn subscription(&self) -> iced::Subscription<Message> {
         // The event pump doubles as the 500 ms tick; the level subscription
-        // samples the mic level separately at 50 ms for the meters.
+        // samples the mic level separately at 50 ms for the meters; the
+        // window-events subscription feeds the focus for the
+        // backdrop-when-inactive look.
         iced::Subscription::batch(vec![
             iced::Subscription::run(events_stream),
             level::subscribe(),
+            window_focus_stream(),
         ])
     }
 
@@ -794,6 +886,18 @@ impl App {
 
 }
 
+
+/// Focus changes from the window manager. The
+/// backdrop-when-inactive look is focus-driven in Python too (look.py's
+/// set_look listens on the window's focus); here the two window events
+/// become one message.
+fn window_focus_stream() -> iced::Subscription<Message> {
+    iced::window::events().filter_map(|(_id, event)| match event {
+        iced::window::Event::Focused => Some(Message::WindowFocus(true)),
+        iced::window::Event::Unfocused => Some(Message::WindowFocus(false)),
+        _ => None,
+    })
+}
 
 /// Open a folder in Explorer; failures (no session desktop, sandbox) are
 /// ignored, the same way the Python app's Explorer call behaves.

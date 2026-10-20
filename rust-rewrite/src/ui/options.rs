@@ -109,6 +109,34 @@ pub fn auto_stop_options() -> Vec<Choice> {
     ])
 }
 
+/// "Keep models loaded for" (settings.py idle combo): the seconds each
+/// step stores and its label; 0 means instant unload after a take.
+pub fn idle_seconds_options() -> Vec<Choice> {
+    choices(&[
+        ("0", "Right after each take"),
+        ("30", "30 seconds"),
+        ("60", "1 minute"),
+        ("120", "2 minutes"),
+        ("300", "5 minutes"),
+        ("600", "10 minutes"),
+        ("1800", "30 minutes"),
+        ("3600", "1 hour"),
+    ])
+}
+
+/// "Delete dictations older than" (settings.py keeping-history combo);
+/// 0 means keep forever.
+pub fn history_days_options() -> Vec<Choice> {
+    choices(&[
+        ("0", "Forever"),
+        ("365", "1 year"),
+        ("90", "90 days"),
+        ("30", "30 days"),
+        ("7", "7 days"),
+        ("1", "1 day"),
+    ])
+}
+
 /// The three silence levels of isolate_output_level, again the Python
 /// wording: "Go silent" (0), "Drop to 25%" (25), "Drop to 50%" (50).
 pub fn level_options() -> Vec<Choice> {
