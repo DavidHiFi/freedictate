@@ -12,7 +12,7 @@ whisper-rs = "0.16"
 ureq = "3"
 # CPU rendering (tiny-skia): a dictation utility has no shader needs, and a
 # wedged GPU driver must never block the window from opening.
-iced = { version = "0.14", default-features = false, features = ["tiny-skia", "svg", "crisp", "web-colors", "thread-pool"] }
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "svg", "crisp", "web-colors", "thread-pool", "image"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
@@ -27,6 +27,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_Threading",

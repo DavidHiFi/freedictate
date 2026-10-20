@@ -25,6 +25,7 @@ pub(crate) mod widgets;
 mod overlay;
 mod icons;
 pub(crate) mod level;
+pub(crate) mod icon;
 
 /// Events that reach the subscription while `run` is active.
 static EVENT_QUEUE: OnceLock<Mutex<std::sync::mpsc::Receiver<(String, Value)>>> = OnceLock::new();
@@ -496,6 +497,9 @@ pub fn run(cfg_path: Option<std::path::PathBuf>) -> iced::Result {
     .default_font(iced::Font::with_name(std::boxed::Box::leak(font_family.into_boxed_str())))
     .subscription(App::subscription)
     .window(iced::window::Settings {
+        // The taskbar/Alt-tab icon for the window iced owns; the exe
+        // resource only covers Explorer's view.
+        icon: icon::window_icon(),
         // Transparent so the DWM backdrop (Mica/Acrylic/blur) can read
         // through; the palette paints every surface itself when the
         // backdrop is solid or none.
