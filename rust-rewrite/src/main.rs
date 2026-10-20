@@ -10,5 +10,11 @@ fn main() -> iced::Result {
             cfg_path = args.next().map(std::path::PathBuf::from);
         }
     }
+    // One instance per user: a second launch wakes the running window and
+    // exits (app.py _signal_running). A --settings run skips the guard so
+    // tests can run alongside the real app.
+    if cfg_path.is_none() && freedictate_rust::single_instance::guard().is_err() {
+        return Ok(());
+    }
     freedictate_rust::ui::run(cfg_path)
 }

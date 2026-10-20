@@ -59,7 +59,7 @@ struct RECT { left: i32, top: i32, right: i32, bottom: i32 }
 
 pub enum TrayEvent { ShowSettings, Quit }
 
-const WCLASS: &str = "FreeDictateRustTrayHidden";
+const WCLASS: &str = "FreeDictateRustInstance";
 const ICON_FILE: &str = "freedictate.ico";
 const IDM_SETTINGS: usize = 1;
 const IDM_EXIT: usize = 2;
@@ -100,6 +100,13 @@ fn load_icon(path: &str) -> Option<HICON> {
 static TRAY_SENDER: std::sync::OnceLock<std::sync::Mutex<Option<Sender<TrayEvent>>>> = std::sync::OnceLock::new();
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> isize {
+    // A second instance posts this registered message to wake us.
+    if msg == crate::single_instance::wake_message() {
+        if let Some(sender) = TRAY_SENDER.get().and_then(|m| m.lock().ok()).and_then(|g| g.clone()) {
+            let _ = sender.send(TrayEvent::ShowSettings);
+        }
+        return 0;
+    }
     match msg {
         WM_DESTROY => {
             let _ = PostThreadMessageW(GetCurrentThreadId(), WM_QUIT, WPARAM(0), LPARAM(0));
@@ -162,7 +169,9 @@ pub fn spawn(sender: Sender<TrayEvent>) -> Result<Tray, String> {
     copy_icon()?;
     let (tx, rx) = std::sync::mpsc::channel::<u32>();
     let thread = std::thread::spawn(move || {
-        let cls = to_wide(WCLASS);
+        // The per-user instance class is the one the single-instance guard
+        // searches for, so a second launch wakes this window.
+        let cls = to_wide(&format!("{WCLASS}-{}", crate::single_instance::username()));
         let wc = WNDCLASSW {
             style: 0,
             lpfnWndProc: Some(wnd_proc),

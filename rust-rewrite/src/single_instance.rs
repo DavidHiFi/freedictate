@@ -37,7 +37,7 @@ fn wake_message_for(user: &str) -> u32 {
     })
 }
 
-fn username() -> String {
+pub fn username() -> String {
     std::env::var("USERNAME").unwrap_or_else(|_| {
         std::env::var("USER").unwrap_or_else(|_| "user".to_string())
     })

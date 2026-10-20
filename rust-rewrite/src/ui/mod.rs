@@ -30,6 +30,10 @@ pub(crate) mod icon;
 /// Events that reach the subscription while `run` is active.
 static EVENT_QUEUE: OnceLock<Mutex<std::sync::mpsc::Receiver<(String, Value)>>> = OnceLock::new();
 
+/// Side channel for UI-shell events that are not engine events: the tray
+/// icon and the single-instance wake. Drained by the same event pump.
+static AUX_QUEUE: OnceLock<Mutex<std::sync::mpsc::Receiver<(String, Value)>>> = OnceLock::new();
+
 /// One-line results from the background worker threads (model verify, the
 /// update check, library downloads). The app copy reads them on every tick.
 static VERIFY_NOTE: OnceLock<Mutex<String>> = OnceLock::new();
@@ -122,6 +126,10 @@ pub(crate) enum Message {
     OverlayPositionSelected(String),
     OverlayTimerToggled(bool),
     OverlayBackdropSelected(String),
+    /// The tray icon was clicked, or a second launch woke us up; the same
+    /// raise action answers both. QuitFromTray ends the app.
+    ShowFromTray,
+    QuitFromTray,
     /// A model-library row's button: download when absent, remove when on
     /// disk. The engine load/unload controls stay on ModelSelected.
     LibraryModelClicked(String),
@@ -210,6 +218,19 @@ impl App {
     fn new(cfg: Config, engine: Engine) -> Self {
         let _ = VERIFY_NOTE.set(Mutex::new(String::new()));
         let _ = UPDATE_NOTE.set(Mutex::new(String::new()));
+        // Python checks for updates at start when check_updates wants it;
+        // the Rust port does the same once per session, in the background,
+        // and the result line lands in the update row on the next tick.
+        if cfg.bool_value("check_updates") {
+            let prereleases = cfg.bool_value("update_prereleases");
+            std::thread::Builder::new()
+                .name("update-auto".to_string())
+                .spawn(move || {
+                    std::thread::sleep(Duration::from_secs(10));
+                    publish_note(false, &crate::updater::check_note(prereleases));
+                })
+                .ok();
+        }
         let hotkey_draft = cfg.string_value("hotkey");
         // Reopen on the page the user last had open, like the Python app.
         let page = if cfg.string_value("window_page") == "settings" {
@@ -260,6 +281,9 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> iced::Task<Message> {
+        // Most arms finish synchronously; a few return real tasks (window
+        // focus/geometry). The optional slot collects those.
+        let mut task: Option<iced::Task<Message>> = None;
         match message {
             Message::Tick => {
                 self.refresh_downloaded();
@@ -416,6 +440,23 @@ impl App {
             }
             Message::Level(value) => {
                 self.level = value;
+            }
+            Message::ShowFromTray => {
+                // Tray click / second-instance wake: raise the existing
+                // window the way QSystemTrayIcon.activated did. The oldest
+                // window is the one iced booted with.
+                task = Some(iced::window::oldest().then(|maybe| match maybe {
+                    Some(id) => iced::window::gain_focus(id),
+                    None => iced::Task::none(),
+                }));
+            }
+            Message::QuitFromTray => {
+                // Exit closes the window; iced returns from run() and the
+                // process ends (the engine joins its threads at drop).
+                task = Some(iced::window::latest().then(|maybe| match maybe {
+                    Some(id) => iced::window::close(id),
+                    None => iced::Task::none(),
+                }));
             }
             Message::SettingsSection(section) => {
                 self.settings_section = section.clone();
@@ -630,7 +671,7 @@ impl App {
                 self.refresh_history();
             }
         }
-        iced::Task::none()
+        task.unwrap_or_else(iced::Task::none)
     }
 
     /// Re-apply the window chrome after a look change: the palette and the
@@ -773,6 +814,26 @@ pub fn run(cfg_path: Option<std::path::PathBuf>) -> iced::Result {
     };
     let (tx, rx) = std::sync::mpsc::channel::<(String, Value)>();
     let _ = EVENT_QUEUE.set(Mutex::new(rx));
+    // Shell events (tray, wake) get their own tiny queue; a converter
+    // thread maps tray events onto it.
+    let (aux_tx, aux_rx) = std::sync::mpsc::channel::<(String, Value)>();
+    let _ = AUX_QUEUE.set(Mutex::new(aux_rx));
+    let (tray_tx, tray_rx) = std::sync::mpsc::channel::<crate::tray::TrayEvent>();
+    // The Tray handle must stay alive for the process lifetime (dropping
+    // it would remove the icon and stop the wake window).
+    let _tray = crate::tray::spawn(tray_tx);
+    std::thread::Builder::new()
+        .name("tray-events".to_string())
+        .spawn(move || {
+            for event in tray_rx {
+                let action = match event {
+                    crate::tray::TrayEvent::ShowSettings => "show",
+                    crate::tray::TrayEvent::Quit => "quit",
+                };
+                let _ = aux_tx.send(("tray".to_string(), Value::from(action)));
+            }
+        })
+        .ok();
     // The engine calls this from its poller and transcriber threads; sending
     // onto the std channel is the only thing it does, and if the window is
     // not there the event is dropped.
@@ -854,6 +915,28 @@ fn events_stream() -> impl iced::futures::Stream<Item = Message> {
                     },
                     // run() has not installed the queue yet; idle until it does.
                     None => std::thread::sleep(POLL),
+                }
+                // Shell events (tray clicks, the single-instance wake) ride
+                // their own queue; drain what arrived during this poll. The
+                // guard is dropped before the sends, so the loop's futures
+                // stay Send.
+                let mut shell: Vec<Message> = Vec::new();
+                if let Some(rx) = AUX_QUEUE.get() {
+                    loop {
+                        let attempt = rx.lock().expect("aux queue").try_recv();
+                        match attempt {
+                            Ok((kind, value)) if kind == "tray" => match value.as_str() {
+                                Some("show") => shell.push(Message::ShowFromTray),
+                                Some("quit") => shell.push(Message::QuitFromTray),
+                                _ => {}
+                            },
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                    }
+                }
+                for shell_message in shell {
+                    let _ = out.send(shell_message).await;
                 }
                 if Instant::now() >= next_tick {
                     next_tick = Instant::now() + TICK;

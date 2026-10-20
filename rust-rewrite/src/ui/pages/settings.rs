@@ -6,10 +6,10 @@
 //! right, scrolling when the section is long. Every row title, caption and
 //! note is the Python wording, so both builds read the same.
 //!
-//! Rows bind the Message variants that already exist in crate::ui. Where the
-//! Python page has a control the Rust message set has no variant for, the
-//! row is still shown and carries the current value as plain text; those
-//! gaps are listed in the report next to this file.
+//! Every row binds a Message variant that exists in crate::ui; the Python
+//! controls that this build has no message or helper for (the file dialogs,
+//! the font completer, GPU support) stay as plain text and say so in their
+//! row.
 
 use iced::widget::{column, row, scrollable, Space};
 use iced::{Alignment, Length};
@@ -59,6 +59,19 @@ const BACKDROPS: &[(&str, &str)] = &[
     ("acrylic", "Acrylic"),
     ("blur", "Blur"),
 ];
+
+/// The recording bar rows (settings.py _page_dictation).
+const OVERLAY_POSITIONS: &[(&str, &str)] = &[("bottom", "Bottom"), ("top", "Top")];
+const OVERLAY_BACKDROPS: &[(&str, &str)] = &[
+    ("mica_alt", "Mica Alt"),
+    ("mica", "Mica"),
+    ("acrylic", "Acrylic"),
+    ("blur", "Blur"),
+    ("solid", "Solid"),
+];
+
+/// The title bar the app draws (settings.py _page_look).
+const TITLEBARS: &[(&str, &str)] = &[("custom", "FreeDictate"), ("windows", "Windows")];
 
 /// The fonts the Rust build can use (the Python page lists every family on
 /// the PC; iced fixes the font at boot, so the list is short here).
@@ -227,21 +240,45 @@ fn dictation_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         p,
     ));
 
-    // The stop key: the Rust build has no message for it, so the row shows
-    // the key it stops a take with.
-    let cancel = cfg.string_value("cancel_key");
-    let cancel_warning = crate::hotkeys::warning(&cancel);
-    let cancel_notes: Vec<Note> = if cancel_warning.is_empty() {
-        Vec::new()
+    // The stop key: the same recorded-draft pattern as the shortcut, with
+    // Python's overlap check on top (settings.py set_cancel). "esc" restores
+    // the default, and saves the moment it parses.
+    let cancel_draft = app.cancel_key_draft.clone();
+    let mut cancel_notes: Vec<Note> = Vec::new();
+    if crate::hotkeys::is_valid(&cancel_draft) {
+        cancel_notes.push(Note::Plain(crate::hotkeys::label(&cancel_draft)));
     } else {
-        vec![Note::Warn(cancel_warning)]
-    };
+        cancel_notes.push(Note::Danger(
+            "Not a valid shortcut. Use key + key, for example Ctrl + Win.".to_string(),
+        ));
+    }
+    if crate::hotkeys::overlaps(&cancel_draft, &draft) {
+        cancel_notes.push(Note::Warn(format!(
+            "{} is already the dictation shortcut. Pick a different key.",
+            crate::hotkeys::label(&cancel_draft)
+        )));
+    }
+    let cancel_warning = crate::hotkeys::warning(&cancel_draft);
+    if !cancel_warning.is_empty() {
+        cancel_notes.push(Note::Warn(cancel_warning));
+    }
+    let cancel = row(vec![
+        widgets::hotkey_edit(&cancel_draft, Message::CancelKeyChanged, p).into(),
+        widgets::flat_button(
+            "Reset",
+            Message::CancelKeyChanged("esc".to_string()),
+            p,
+        )
+        .into(),
+    ])
+    .spacing(8)
+    .into();
     rows.push(setting_row(
         "Stop key",
         "Stops a take at any point: while you talk, or while it's being written out. \
          Click the box, then press the key you want.",
         &cancel_notes,
-        Some(widgets::body(&crate::hotkeys::label(&cancel), p)),
+        Some(cancel),
         p,
     ));
 
@@ -320,28 +357,42 @@ fn dictation_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         p,
     ));
 
+    // The vocabulary box: the saved words it should spell right. The Python
+    // page keeps the same field in the Recording card (settings.py vocab).
     let vocabulary = cfg.string_value("vocabulary");
-    let vocabulary = if vocabulary.is_empty() {
-        "Names, separated by commas".to_string()
-    } else {
-        vocabulary
-    };
     rows.push(setting_row(
         "Words it should know",
         "Helps with names and terms it would otherwise misspell.",
         &[],
-        Some(widgets::body(&vocabulary, p)),
+        Some(widgets::text_field(
+            "Names, separated by commas",
+            &vocabulary,
+            300.0,
+            Message::VocabularyChanged,
+            p,
+        )),
         p,
     ));
 
     // Only a press-to-start take can end on silence.
     if mode != "hold" {
-        let silence = cfg.number_value("auto_stop_silence");
+        let quiet = options::auto_stop_options();
+        let saved = cfg.number_value("auto_stop_silence");
+        let choice = options::select(&quiet, &saved.to_string())
+            .cloned()
+            .or_else(|| options::select(&quiet, "0").cloned());
         rows.push(setting_row(
             "Stop when you go quiet",
             "Ends a press-to-start take after a pause.",
             &[],
-            Some(widgets::body(&silence_label(silence), p)),
+            Some(combo_or_blank(
+                quiet,
+                choice,
+                // The dropdown hands back "0"/"2"/…; the message carries the
+                // seconds the config stores.
+                |key| Message::AutoStopSelected(key.parse().unwrap_or(0)),
+                p,
+            )),
             p,
         ));
     }
@@ -460,15 +511,21 @@ fn dictation_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Recording bar",
         "A small bar on screen while it listens and transcribes.",
         &[],
-        Some(on_off(cfg.bool_value("overlay"), p)),
+        Some(widgets::toggle(
+            cfg.bool_value("overlay"),
+            Message::OverlayToggled,
+            p,
+        )),
         p,
     ));
     rows.push(setting_row(
         "Bar position",
         "",
         &[],
-        Some(widgets::body(
-            &position_label(&cfg.string_value("overlay_position")),
+        Some(widgets::segmented(
+            OVERLAY_POSITIONS,
+            &cfg.string_value("overlay_position"),
+            Message::OverlayPositionSelected,
             p,
         )),
         p,
@@ -477,8 +534,10 @@ fn dictation_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Bar material",
         "Uses the window's tint over a picture of what's behind the bar, taken as it appears.",
         &[],
-        Some(widgets::body(
-            &backdrop_label(&cfg.string_value("overlay_backdrop")),
+        Some(widgets::segmented(
+            OVERLAY_BACKDROPS,
+            &cfg.string_value("overlay_backdrop"),
+            Message::OverlayBackdropSelected,
             p,
         )),
         p,
@@ -487,7 +546,11 @@ fn dictation_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Show the timer",
         "",
         &[],
-        Some(on_off(cfg.bool_value("overlay_timer"), p)),
+        Some(widgets::toggle(
+            cfg.bool_value("overlay_timer"),
+            Message::OverlayTimerToggled,
+            p,
+        )),
         p,
     ));
     out.extend(section_card("Feedback", "", rows, p));
@@ -568,32 +631,81 @@ fn models_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         p,
     ));
 
-    // The model library: every model with its state.
+    // The model library: every model with its state and the one valid
+    // action, like Python _refresh_library and _library_clicked. The active
+    // model gets no button; a downloaded one gets Remove and, when it is
+    // not the configured one, Use. The verify line carries the one-line
+    // results the background worker publishes.
     let mut rows: Vec<Element<'a>> = Vec::new();
     for info in crate::transcribe::CATALOG {
-        let state = if !active.is_empty() && info.name == active {
-            format!("In use · on the {}", device_label(&cfg.string_value("device")))
-        } else if app.downloaded.iter().any(|name| name == info.name) {
-            "Downloaded".to_string()
-        } else if ms_status == "downloading" && total > 0 {
-            format!("Downloading {}%…", percent(done, total))
+        let busy = app.lib_busy.iter().any(|name| name == info.name);
+        let active_here = !active.is_empty() && info.name == active;
+        let on_disk = busy
+            || app.downloaded.iter().any(|name| name == info.name)
+            || crate::transcribe::is_downloaded(info.name);
+        let note = if busy {
+            Note::Warn("Downloading…".to_string())
+        } else if active_here {
+            Note::Ok(format!(
+                "In use · on the {}",
+                device_label(&cfg.string_value("device"))
+            ))
+        } else if on_disk {
+            Note::Ok("Downloaded".to_string())
         } else {
-            format!("Not downloaded · {} MB", info.size_mb)
+            Note::Danger(format!("Not downloaded · {} MB", info.size_mb))
         };
+        let mut controls: Vec<Element<'a>> = Vec::new();
+        if on_disk && !busy && info.name != model_key {
+            controls.push(
+                widgets::primary_button(
+                    "Use",
+                    Message::LibraryUseClicked(info.name.to_string()),
+                    p,
+                )
+                .into(),
+            );
+        }
+        if active_here {
+            controls.push(Space::new().width(Length::Fixed(240.0)).into());
+        } else {
+            let label = if busy {
+                "Downloading…"
+            } else if on_disk {
+                "Remove"
+            } else {
+                "Download"
+            };
+            controls.push(
+                widgets::flat_button(label, Message::LibraryModelClicked(info.name.to_string()), p)
+                    .into(),
+            );
+        }
         rows.push(setting_row(
             info.title,
             "",
-            &[Note::Plain(state)],
-            None,
+            &[note],
+            Some(row(controls).spacing(8).align_y(Alignment::Center).into()),
             p,
         ));
     }
+    let verify_notes: Vec<Note> = if app.verify_note.is_empty() {
+        Vec::new()
+    } else {
+        vec![Note::Plain(app.verify_note.clone())]
+    };
+    let verify_controls = row(vec![
+        widgets::flat_button("Verify model files", Message::VerifyModels, p).into(),
+        widgets::flat_button("Open folder", Message::OpenModelFolder, p).into(),
+    ])
+    .spacing(8)
+    .into();
     rows.push(setting_row(
         "Model files",
         "Downloads are recorded with sizes and checksums and checked when this page opens. \
          This re-checks every byte of every file.",
-        &[],
-        None,
+        &verify_notes,
+        Some(verify_controls),
         p,
     ));
     out.extend(section_card(
@@ -908,34 +1020,50 @@ fn text_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         p,
     ));
 
-    // The replacements card: the list is shown, but not editable in this
-    // build.
+    // The replacements editor (settings.py _add_repl and _save_repl): one
+    // field pair per draft row, plus the scratch rows still being typed.
+    // Saving drops rows with a blank "when it writes", and the app keeps
+    // saved rows and drafts in step on every change.
     let mut rows: Vec<Element<'a>> = Vec::new();
-    if let Some(items) = cfg.get("replacements").and_then(|value| value.as_array()) {
-        for item in items {
-            let find = item
-                .get("find")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default();
-            let replace = item
-                .get("replace")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default();
-            if find.trim().is_empty() {
-                continue;
-            }
-            rows.push(setting_row(
-                find,
-                "",
-                &[Note::Plain(replace.to_string())],
-                None,
-                p,
-            ));
-        }
+    for (index, (find, replace)) in app.replacements_draft.iter().enumerate() {
+        rows.push(
+            row(vec![
+                widgets::text_field(
+                    "When it writes",
+                    find,
+                    180.0,
+                    move |text| Message::ReplacementFindChanged(index, text),
+                    p,
+                )
+                .into(),
+                widgets::sub("→", p).into(),
+                widgets::text_field(
+                    "Use this instead",
+                    replace,
+                    180.0,
+                    move |text| Message::ReplacementReplaceChanged(index, text),
+                    p,
+                )
+                .into(),
+                widgets::flat_button("✕", Message::ReplacementRemove(index), p).into(),
+            ])
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+        );
     }
+    rows.push(
+        row(vec![
+            widgets::flat_button("Add replacement", Message::ReplacementAdd, p).into(),
+            widgets::primary_button("Save", Message::ReplacementsSaved, p).into(),
+        ])
+        .spacing(8)
+        .into(),
+    );
     out.extend(section_card(
         "Replacements",
-        "Fix words it keeps getting wrong. Matches whole words, any case.",
+        "Fix words it keeps getting wrong. Matches whole words, any case. \
+         Rows with a blank \"when it writes\" are dropped when you save.",
         rows,
         p,
     ));
@@ -1004,12 +1132,19 @@ fn look_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         Some(combo_or_blank(backdrops, backdrop_choice, Message::BackdropSelected, p)),
         p,
     ));
+    let tint = cfg.float_value("tint") as f32;
     rows.push(setting_row(
         "Tint",
         "How much of the theme colour covers the material. Lower lets more through.",
-        &[],
-        Some(widgets::body(
-            &format!("{}%", cfg.float_value("tint") as u32),
+        &[Note::Plain(format!(
+            "Tint: {}%",
+            tint.round() as u32
+        ))],
+        Some(widgets::styled_slider(
+            0.0..=100.0,
+            tint,
+            Message::TintChanged,
+            Message::TintReleased,
             p,
         )),
         p,
@@ -1025,8 +1160,10 @@ fn look_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Title bar",
         "Windows uses the standard title bar, buttons and menu.",
         &[],
-        Some(widgets::body(
-            &titlebar_label(&cfg.string_value("titlebar")),
+        Some(widgets::segmented(
+            TITLEBARS,
+            &cfg.string_value("titlebar"),
+            Message::TitlebarSelected,
             p,
         )),
         p,
@@ -1039,7 +1176,11 @@ fn look_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Reduce motion",
         "Turns off fades and sliding switches.",
         &[],
-        Some(on_off(cfg.bool_value("reduce_motion"), p)),
+        Some(widgets::toggle(
+            cfg.bool_value("reduce_motion"),
+            Message::ReduceMotionToggled,
+            p,
+        )),
         p,
     ));
     out.extend(section_card("Motion", "", rows, p));
@@ -1049,21 +1190,113 @@ fn look_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
 
 // ------------------------------------------------------------- the history page
 
-/// Keeping the dictations (settings.py _page_history).
+/// Keeping the dictations (settings.py _page_history and HistoryItem).
 fn history_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
     let cfg = &app.cfg;
     let mut out: Vec<Element<'a>> = Vec::new();
 
-    // The Python page puts a toolbar above the card: the search box, the
-    // file button, the export button and "Clear all". Only the last one has
-    // a message in this build.
+    // The Python toolbar above the card: the search box and the buttons.
+    // "Transcribe a file" has no message in this build, so the toolbar keeps
+    // the search and Clear all; export and import live in their own card.
     out.push(
         row(vec![
+            widgets::text_field(
+                "Search your dictations",
+                &app.history_query,
+                280.0,
+                Message::HistoryQueryChanged,
+                p,
+            )
+            .into(),
+            Space::new().width(Length::Fill).into(),
             widgets::danger_button("Clear all", Message::ClearHistory, p).into(),
         ])
-        .width(Length::Fill)
+        .spacing(8)
         .into(),
     );
+
+    // The list a tick last pulled (newest first): one row per dictation,
+    // with Python HistoryItem's meta line and its delete button.
+    if app.history_rows.is_empty() {
+        let note = if !app.history_query.is_empty() {
+            format!("Nothing matches \"{}\".", app.history_query)
+        } else if !cfg.bool_value("history_enabled") {
+            "History is off. Turn on \"Save my dictations\" below to keep a record here."
+                .to_string()
+        } else {
+            format!(
+                "No dictations yet. Hold {} anywhere, talk, and let go. Each one shows up here.",
+                crate::hotkeys::label(&cfg.string_value("hotkey"))
+            )
+        };
+        out.push(widgets::sub(&note, p));
+    } else {
+        let mut rows: Vec<Element<'a>> = Vec::new();
+        for entry in &app.history_rows {
+            let mut meta = vec![
+                timestamp_label(entry.ts),
+                format!("{:.0} s", entry.seconds),
+            ];
+            if !entry.app.is_empty() {
+                meta.push(entry.app.trim_end_matches(".exe").to_string());
+            }
+            let text = if entry.text.chars().count() < 600 {
+                entry.text.clone()
+            } else {
+                format!(
+                    "{}...",
+                    entry
+                        .text
+                        .chars()
+                        .take(600)
+                        .collect::<String>()
+                        .trim_end()
+                )
+            };
+            let left = column(vec![
+                widgets::sub(&meta.join("  ·  "), p),
+                widgets::body(&text, p),
+            ]);
+            rows.push(
+                row(vec![
+                    left.width(Length::Fill).into(),
+                    widgets::danger_button(
+                        "Delete",
+                        Message::HistoryDeleteSelected(entry.id),
+                        p,
+                    )
+                    .into(),
+                ])
+                .spacing(10)
+                .align_y(Alignment::Center)
+                .into(),
+            );
+        }
+        out.push(widgets::card(rows, p));
+    }
+
+    // Export and import: fixed paths in the data folder (this build has no
+    // file dialog), and the one-line result published after either job.
+    let mut rows: Vec<Element<'a>> = Vec::new();
+    rows.push(setting_row(
+        "Export and import",
+        "Export writes every dictation to history-export.txt in the data folder. Import reads \
+         transcripts.log from the same folder.",
+        &[],
+        Some(
+            row(vec![
+                widgets::flat_button("Export", Message::ExportHistory, p).into(),
+                widgets::flat_button("Import", Message::ImportHistory, p).into(),
+            ])
+            .spacing(8)
+            .into(),
+        ),
+        p,
+    ));
+    out.extend(section_card("Export and import", "", rows, p));
+    if !app.verify_note.is_empty() {
+        out.push(widgets::sub(&app.verify_note, p));
+    }
 
     let mut rows: Vec<Element<'a>> = Vec::new();
     rows.push(setting_row(
@@ -1116,7 +1349,11 @@ fn startup_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Lets it paste into apps that run as administrator. Windows blocks that otherwise. \
          Asks for permission once.",
         &[],
-        Some(on_off(cfg.bool_value("run_elevated"), p)),
+        Some(widgets::toggle(
+            cfg.bool_value("run_elevated"),
+            Message::RunElevatedToggled,
+            p,
+        )),
         p,
     ));
     out.extend(section_card("Startup", "", rows, p));
@@ -1126,39 +1363,65 @@ fn startup_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Check for updates automatically",
         "Once a day, from GitHub. Nothing installs without you.",
         &[],
-        Some(on_off(cfg.bool_value("check_updates"), p)),
+        Some(widgets::toggle(
+            cfg.bool_value("check_updates"),
+            Message::UpdateCheckToggled,
+            p,
+        )),
         p,
     ));
     rows.push(setting_row(
         "Include test versions",
         "Get pre-releases early. They may have bugs.",
         &[],
-        Some(on_off(cfg.bool_value("update_prereleases"), p)),
+        Some(widgets::toggle(
+            cfg.bool_value("update_prereleases"),
+            Message::UpdatePrereleasesToggled,
+            p,
+        )),
         p,
     ));
+    // The manual check plus the note the background job publishes (an
+    // available version, an up-to-date line, or an error).
+    let mut update_notes: Vec<Note> = Vec::new();
+    if !app.update_note.is_empty() {
+        update_notes.push(Note::Plain(app.update_note.clone()));
+    }
     rows.push(setting_row(
         &format!("FreeDictate {}", crate::updater::VERSION),
         &format!(
             "Last checked: {}.",
             timestamp_label(cfg.float_value("last_update_check"))
         ),
-        &[],
-        None,
+        &update_notes,
+        Some(widgets::primary_button(
+            "Check for updates",
+            Message::CheckUpdates,
+            p,
+        )),
         p,
     ));
     out.extend(section_card("Updates", "", rows, p));
 
+    // The folder button: this build has no file dialog, so the backups rows
+    // keep the paths and the exported files in one place the user can open.
     let data = cfg
         .path
         .parent()
         .map(|folder| folder.display().to_string())
         .unwrap_or_default();
     let mut rows: Vec<Element<'a>> = Vec::new();
+    let data_controls = row(vec![
+        widgets::body(&data, p).into(),
+        widgets::flat_button("Open folder", Message::OpenAppFolder, p).into(),
+    ])
+    .spacing(8)
+    .into();
     rows.push(setting_row(
         "Settings and history",
         "",
         &[],
-        Some(widgets::body(&data, p)),
+        Some(data_controls),
         p,
     ));
     rows.push(setting_row(
@@ -1208,21 +1471,33 @@ fn about_section<'a>(p: &Palette) -> Vec<Element<'a>> {
         "Project page",
         "Source code, documentation and releases.",
         &[],
-        Some(widgets::body(&repo, p)),
+        Some(widgets::link_button(
+            "Open",
+            Message::OpenLink(repo.clone()),
+            p,
+        )),
         p,
     ));
     rows.push(setting_row(
         "Report a problem",
         "Attach the log file from General > Your data.",
         &[],
-        Some(widgets::body(&format!("{repo}/issues/new"), p)),
+        Some(widgets::link_button(
+            "Open",
+            Message::OpenLink(format!("{repo}/issues/new")),
+            p,
+        )),
         p,
     ));
     rows.push(setting_row(
         "What's new",
         "Changes in every version.",
         &[],
-        Some(widgets::body(&format!("{repo}/releases"), p)),
+        Some(widgets::link_button(
+            "Open",
+            Message::OpenLink(format!("{repo}/releases")),
+            p,
+        )),
         p,
     ));
     out.extend(section_card("Links", "", rows, p));
@@ -1388,27 +1663,6 @@ fn mb(bytes: u64) -> String {
     }
 }
 
-/// A download percentage.
-fn percent(done: u64, total: u64) -> u64 {
-    if total == 0 {
-        0
-    } else {
-        done * 100 / total
-    }
-}
-
-/// How long a take may last before it stops on its own.
-fn silence_label(seconds: u32) -> String {
-    match seconds {
-        0 => "Never".to_string(),
-        2 => "After 2 seconds".to_string(),
-        3 => "After 3 seconds".to_string(),
-        5 => "After 5 seconds".to_string(),
-        8 => "After 8 seconds".to_string(),
-        other => format!("After {other} seconds"),
-    }
-}
-
 /// How long the models stay loaded.
 fn idle_seconds_label(seconds: u32) -> String {
     match seconds {
@@ -1424,25 +1678,6 @@ fn idle_seconds_label(seconds: u32) -> String {
     }
 }
 
-/// Where the recording bar sits.
-fn position_label(position: &str) -> &'static str {
-    match position {
-        "top" => "Top",
-        _ => "Bottom",
-    }
-}
-
-/// The material of the recording bar.
-fn backdrop_label(backdrop: &str) -> &'static str {
-    match backdrop {
-        "mica_alt" => "Mica Alt",
-        "mica" => "Mica",
-        "acrylic" => "Acrylic",
-        "blur" => "Blur",
-        _ => "Solid",
-    }
-}
-
 /// The window material, in the Python page's words.
 fn material_desc(backdrop: &str) -> &'static str {
     match backdrop {
@@ -1452,14 +1687,6 @@ fn material_desc(backdrop: &str) -> &'static str {
         "blur" => "Blur: a clear, smooth blur of what's behind the window, without Acrylic's grain.",
         "solid" => "Solid: a plain theme colour.",
         _ => "None: a plain theme colour, with no material behind the window.",
-    }
-}
-
-/// The title bar the app draws.
-fn titlebar_label(titlebar: &str) -> &'static str {
-    match titlebar {
-        "windows" => "Windows",
-        _ => "FreeDictate",
     }
 }
 

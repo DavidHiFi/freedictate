@@ -97,6 +97,18 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("hu", "Hungarian"),
 ];
 
+/// How long a press-to-start take may sit quiet before it ends
+/// (settings.py _page_dictation, the auto_stop_silence dropdown).
+pub fn auto_stop_options() -> Vec<Choice> {
+    choices(&[
+        ("0", "Never"),
+        ("2", "After 2 seconds"),
+        ("3", "After 3 seconds"),
+        ("5", "After 5 seconds"),
+        ("8", "After 8 seconds"),
+    ])
+}
+
 /// The three silence levels of isolate_output_level, again the Python
 /// wording: "Go silent" (0), "Drop to 25%" (25), "Drop to 50%" (50).
 pub fn level_options() -> Vec<Choice> {
@@ -181,5 +193,14 @@ mod tests {
         assert_eq!(level_menu_string(33), "Drop to 25%");
         assert_eq!(level_menu_string(72), "Drop to 50%");
         assert_eq!(level_selected(33).key, "25");
+    }
+
+    #[test]
+    fn auto_stop_steps_carry_their_seconds() {
+        let steps = auto_stop_options();
+        assert_eq!(steps[0].key, "0");
+        assert_eq!(steps[0].label, "Never");
+        assert_eq!(steps.last().unwrap().key, "8");
+        assert!(select(&steps, "5").is_some());
     }
 }
