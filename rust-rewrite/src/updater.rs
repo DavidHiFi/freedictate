@@ -172,6 +172,18 @@ pub fn check(include_prereleases: bool) -> Option<Release> {
     None
 }
 
+/// One-line result of the manual "Check for updates" button. The network
+/// may be down; errors read as "could not check".
+pub fn check_note(include_prereleases: bool) -> String {
+    match check(include_prereleases) {
+        Some(release) if newer(&release.version, VERSION) => {
+            format!("Update available: {}", release.version)
+        }
+        Some(_) => "You are on the latest version.".to_string(),
+        None => "Could not check for updates (offline?).".to_string(),
+    }
+}
+
 // ------------------------------------------------------------------ asset selection
 
 pub fn _asset(rel: &Release, portable: bool) -> io::Result<(String, String)> {

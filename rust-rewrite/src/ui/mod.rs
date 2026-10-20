@@ -30,6 +30,27 @@ pub(crate) mod icon;
 /// Events that reach the subscription while `run` is active.
 static EVENT_QUEUE: OnceLock<Mutex<std::sync::mpsc::Receiver<(String, Value)>>> = OnceLock::new();
 
+/// One-line results from the background worker threads (model verify, the
+/// update check, library downloads). The app copy reads them on every tick.
+static VERIFY_NOTE: OnceLock<Mutex<String>> = OnceLock::new();
+static UPDATE_NOTE: OnceLock<Mutex<String>> = OnceLock::new();
+
+/// Called from worker threads to publish a job's result line; the tick
+/// copies it into the app fields that the rows render.
+pub(crate) fn publish_note(verify: bool, text: &str) {
+    let slot = if verify { &VERIFY_NOTE } else { &UPDATE_NOTE };
+    if let Some(mutex) = slot.get() {
+        *mutex.lock().expect("job note") = text.to_string();
+    }
+}
+
+fn read_note(verify: bool) -> String {
+    let slot = if verify { &VERIFY_NOTE } else { &UPDATE_NOTE };
+    slot.get()
+        .map(|m| m.lock().expect("job note").clone())
+        .unwrap_or_default()
+}
+
 /// How often the status line and download progress refresh on their own.
 const TICK: Duration = Duration::from_millis(500);
 /// How long the event pump waits between polls while engine events are queued.
@@ -91,6 +112,43 @@ pub(crate) enum Message {
     FontSelected(String),
     #[allow(dead_code)]
     BackdropSelected(String),
+    // The display-only rows made interactive: stop key, vocabulary, the
+    // recording overlay bar, the model library, the look rows, updates,
+    // history extras and the word-replacement editor.
+    CancelKeyChanged(String),
+    VocabularyChanged(String),
+    AutoStopSelected(u32),
+    OverlayToggled(bool),
+    OverlayPositionSelected(String),
+    OverlayTimerToggled(bool),
+    OverlayBackdropSelected(String),
+    /// A model-library row's button: download when absent, remove when on
+    /// disk. The engine load/unload controls stay on ModelSelected.
+    LibraryModelClicked(String),
+    /// Switch dictation to a model the row knows is downloaded.
+    LibraryUseClicked(String),
+    VerifyModels,
+    OpenModelFolder,
+    OpenAppFolder,
+    OpenLink(String),
+    TintChanged(f32),
+    TintReleased,
+    TitlebarSelected(String),
+    ReduceMotionToggled(bool),
+    RunElevatedToggled(bool),
+    UpdateCheckToggled(bool),
+    UpdatePrereleasesToggled(bool),
+    CheckUpdates,
+    ExportHistory,
+    ImportHistory,
+    HistoryQueryChanged(String),
+    /// The trash button on one history row.
+    HistoryDeleteSelected(i64),
+    ReplacementAdd,
+    ReplacementRemove(usize),
+    ReplacementFindChanged(usize, String),
+    ReplacementReplaceChanged(usize, String),
+    ReplacementsSaved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,10 +188,28 @@ pub(crate) struct App {
     settings_section: String,
     // Live microphone level (0..1) pushed by the audio level subscription.
     level: f32,
+    // The stop key box mirrors the hotkey box: draft while typing, save the
+    // moment it parses.
+    cancel_key_draft: String,
+    // The replacement-editing rows: (find, replace) drafts plus whether the
+    // saved config differs from them (the Save button's state).
+    replacements_draft: Vec<(String, String)>,
+    // The history list: the search box text and the rows a refresh pulled.
+    history_query: String,
+    history_rows: Vec<crate::history::Entry>,
+    // Model-library rows with a download running (button shows a spinner
+    // state until the tick sees the file on disk).
+    lib_busy: Vec<String>,
+    // One-line results of the background jobs (verify, update check); Tick
+    // copies them in from statics the worker threads write.
+    verify_note: String,
+    update_note: String,
 }
 
 impl App {
     fn new(cfg: Config, engine: Engine) -> Self {
+        let _ = VERIFY_NOTE.set(Mutex::new(String::new()));
+        let _ = UPDATE_NOTE.set(Mutex::new(String::new()));
         let hotkey_draft = cfg.string_value("hotkey");
         // Reopen on the page the user last had open, like the Python app.
         let page = if cfg.string_value("window_page") == "settings" {
@@ -142,6 +218,11 @@ impl App {
             Page::Dictation
         };
         let theme_name = cfg.string_value("theme");
+        let replacements_draft = crate::textproc::replacements_from_config(cfg.get("replacements"))
+            .into_iter()
+            .map(|r| (r.find, r.replace))
+            .collect();
+        let cancel_key_draft = cfg.string_value("cancel_key");
         // Reopen the settings window on the section last opened.
         let settings_section = {
             let saved = cfg.string_value("settings_section");
@@ -164,9 +245,17 @@ impl App {
             theme_name,
             settings_section,
             level: 0.0,
+            cancel_key_draft,
+            replacements_draft,
+            history_query: String::new(),
+            history_rows: Vec::new(),
+            lib_busy: Vec::new(),
+            verify_note: String::new(),
+            update_note: String::new(),
         };
         app.refresh_downloaded();
         app.refresh_mics();
+        app.refresh_history();
         app
     }
 
@@ -176,6 +265,8 @@ impl App {
                 self.refresh_downloaded();
                 self.refresh_mics();
                 self.refresh_geometry();
+                self.refresh_notes();
+                self.refresh_history();
             }
             Message::Engine(_kind, _data) => {
                 // Model and state events already carry the facts; both the
@@ -346,6 +437,198 @@ impl App {
                 self.apply(json!({ "backdrop": backdrop }));
                 self.refresh_chrome();
             }
+            // -------------------------------------------------- stop key
+            Message::CancelKeyChanged(text) => {
+                // Same flow as the main hotkey: the box holds the draft,
+                // a valid key saves at once.
+                self.cancel_key_draft = text.clone();
+                if crate::hotkeys::is_valid(&text) {
+                    self.apply(json!({ "cancel_key": crate::hotkeys::normalize(&text) }));
+                }
+            }
+            // --------------------------------------------------- writing
+            Message::VocabularyChanged(text) => {
+                self.apply(json!({ "vocabulary": text }));
+            }
+            Message::ReplacementAdd => {
+                self.replacements_draft.push((String::new(), String::new()));
+            }
+            Message::ReplacementRemove(index) => {
+                if index < self.replacements_draft.len() {
+                    self.replacements_draft.remove(index);
+                }
+            }
+            Message::ReplacementFindChanged(index, text) => {
+                if let Some(row) = self.replacements_draft.get_mut(index) {
+                    row.0 = text;
+                }
+            }
+            Message::ReplacementReplaceChanged(index, text) => {
+                if let Some(row) = self.replacements_draft.get_mut(index) {
+                    row.1 = text;
+                }
+            }
+            Message::ReplacementsSaved => {
+                // Blank finds are editor scratch rows that never reach the
+                // saved list, matching the old app's save pass.
+                let rows: Vec<Value> = self
+                    .replacements_draft
+                    .iter()
+                    .filter(|(find, _)| !find.trim().is_empty())
+                    .map(|(find, replace)| json!({ "find": find, "replace": replace }))
+                    .collect();
+                self.apply(json!({ "replacements": rows }));
+                // Drop the scratch rows from the editor once they are saved.
+                self.replacements_draft.retain(|(find, _)| !find.trim().is_empty());
+            }
+            Message::AutoStopSelected(seconds) => {
+                self.apply(json!({ "auto_stop_silence": seconds }));
+            }
+            // --------------------------------------------------- overlay
+            Message::OverlayToggled(on) => {
+                self.apply(json!({ "overlay": on }));
+            }
+            Message::OverlayPositionSelected(position) => {
+                self.apply(json!({ "overlay_position": position }));
+            }
+            Message::OverlayTimerToggled(on) => {
+                self.apply(json!({ "overlay_timer": on }));
+            }
+            Message::OverlayBackdropSelected(backdrop) => {
+                self.apply(json!({ "overlay_backdrop": backdrop }));
+            }
+            // --------------------------------------------- model library
+            Message::LibraryModelClicked(name) => {
+                if crate::transcribe::is_downloaded(&name) {
+                    if let Some(path) = crate::transcribe::local_path(&name) {
+                        if let Err(e) = std::fs::remove_file(&path) {
+                            publish_note(true, &format!("Removing {name} failed: {e}"));
+                        }
+                        self.refresh_downloaded();
+                    }
+                } else if !self.lib_busy.iter().any(|busy| busy == &name) {
+                    self.lib_busy.push(name.clone());
+                    let note_mirror = name.clone();
+                    std::thread::Builder::new()
+                        .name("model-download".to_string())
+                        .spawn(move || {
+                            let cancel = std::sync::atomic::AtomicBool::new(false);
+                            match crate::transcribe::download(&note_mirror, &|_, _| {}, &cancel) {
+                                Ok(_) => publish_note(true, ""),
+                                Err(e) => publish_note(true, &format!("{note_mirror}: {e}")),
+                            }
+                        })
+                        .ok();
+                }
+            }
+            Message::LibraryUseClicked(name) => {
+                self.apply(json!({ "model": name }));
+                self.engine.load_model_async();
+            }
+            Message::VerifyModels => {
+                std::thread::Builder::new()
+                    .name("model-verify".to_string())
+                    .spawn(|| {
+                        publish_note(true, &crate::engine::verify_models());
+                    })
+                    .ok();
+            }
+            Message::OpenModelFolder => {
+                open_in_explorer(&crate::transcribe::models_dir());
+            }
+            Message::OpenAppFolder => {
+                let dir = std::env::var("APPDATA")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_default()
+                    .join("FreeDictate-Rust");
+                open_in_explorer(&dir);
+            }
+            Message::OpenLink(url) => {
+                // Start-before-empty-title is the canonical shell link open;
+                // failures are ignored (an offline box loses nothing).
+                let _ = std::process::Command::new("cmd")
+                    .args(["/C", "start", "", &url])
+                    .spawn();
+            }
+            // ------------------------------------------------------ look
+            Message::TintChanged(value) => {
+                // Slide live: only the render-side tint moves; the saved
+                // value and the DWM chrome update on release.
+                self.cfg
+                    .update(&json!({ "tint": (value.round() as u32).max(0).min(100) }));
+                self.refresh_chrome();
+            }
+            Message::TintReleased => {
+                let tint = self.cfg.number_value("tint");
+                self.apply(json!({ "tint": tint }));
+                self.refresh_chrome();
+            }
+            Message::TitlebarSelected(titlebar) => {
+                self.apply(json!({ "titlebar": titlebar }));
+                self.refresh_chrome();
+            }
+            Message::ReduceMotionToggled(on) => {
+                self.apply(json!({ "reduce_motion": on }));
+            }
+            Message::RunElevatedToggled(on) => {
+                self.apply(json!({ "run_elevated": on }));
+            }
+            // --------------------------------------------------- updates
+            Message::UpdateCheckToggled(on) => {
+                self.apply(json!({ "check_updates": on }));
+            }
+            Message::UpdatePrereleasesToggled(on) => {
+                self.apply(json!({ "update_prereleases": on }));
+            }
+            Message::CheckUpdates => {
+                let allow = self.cfg.bool_value("update_prereleases");
+                std::thread::Builder::new()
+                    .name("update-check".to_string())
+                    .spawn(move || {
+                        let note = crate::updater::check_note(allow);
+                        publish_note(false, &note);
+                    })
+                    .ok();
+            }
+            // --------------------------------------------------- history
+            Message::ExportHistory => {
+                let base = std::env::var("APPDATA")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_default()
+                    .join("FreeDictate-Rust");
+                let target = base.join("history-export.txt");
+                let count = crate::engine::history_export(&target);
+                let note = if count >= 0 {
+                    format!("Exported {count} entries to {}", target.display())
+                } else {
+                    "Export failed: could not write the file.".to_string()
+                };
+                publish_note(true, &note);
+            }
+            Message::ImportHistory => {
+                let base = std::env::var("APPDATA")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_default()
+                    .join("FreeDictate-Rust");
+                let source = base.join("transcripts.log");
+                let count = crate::engine::history_import(&source);
+                publish_note(
+                    true,
+                    &if count > 0 {
+                        format!("Imported {count} entries from {}", source.display())
+                    } else {
+                        format!("Nothing imported from {} (missing or empty).", source.display())
+                    },
+                );
+            }
+            Message::HistoryQueryChanged(query) => {
+                self.history_query = query;
+                self.refresh_history();
+            }
+            Message::HistoryDeleteSelected(id) => {
+                crate::engine::history_delete(id);
+                self.refresh_history();
+            }
         }
         iced::Task::none()
     }
@@ -354,6 +637,22 @@ impl App {
     /// backdrop both live in config, and the DWM attributes take them live.
     fn refresh_chrome(&self) {
         chrome::request(self.palette(), self.cfg.string_value("backdrop"));
+    }
+
+    /// Copy the background jobs' result lines into the fields the rows
+    /// render, and clear library busy-marks the tick can see finished.
+    fn refresh_notes(&mut self) {
+        self.verify_note = read_note(true);
+        self.update_note = read_note(false);
+        // A busy model whose file now exists (or vanished) is done busy.
+        self.lib_busy
+            .retain(|name| !crate::transcribe::is_downloaded(name));
+    }
+
+    /// Pull the history list for the rows: the search text filters it,
+    /// newest first, capped at what the page shows.
+    fn refresh_history(&mut self) {
+        self.history_rows = crate::engine::history_search(&self.history_query, 20);
     }
 
     /// The palette the window currently draws with: resolve() plus the
@@ -454,6 +753,16 @@ impl App {
 
 }
 
+
+/// Open a folder in Explorer; failures (no session desktop, sandbox) are
+/// ignored, the same way the Python app's Explorer call behaves.
+fn open_in_explorer(path: &std::path::Path) {
+    if path.exists() {
+        let _ = std::process::Command::new("explorer")
+            .arg(path.as_os_str())
+            .spawn();
+    }
+}
 
 /// Entry point the main.rs binary calls. Boots the config, starts the engine
 /// and opens the window; tests never get here.

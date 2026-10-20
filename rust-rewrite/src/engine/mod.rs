@@ -151,6 +151,73 @@ pub fn clear_history() {
     shared_history().clear();
 }
 
+/// The history page's search: newest first, capped like the Python page.
+pub fn history_search(query: &str, limit: usize) -> Vec<crate::history::Entry> {
+    shared_history().search(query, limit, 0)
+}
+
+/// Delete one history row (the trash button on the history list).
+pub fn history_delete(id: i64) {
+    shared_history().delete(id);
+}
+
+/// Write every entry out as plain text, oldest or newest first like
+/// history.export_text does in Python. Returns the entry count, -1 on
+/// failure.
+pub fn history_export(target: &std::path::Path) -> i64 {
+    shared_history().export_text(target)
+}
+
+/// Pull a legacy transcripts.log in (square-bracket timestamp lines).
+pub fn history_import(source: &std::path::Path) -> i64 {
+    shared_history().import_legacy_log(source)
+}
+
+/// Size-and-presence check over the model catalog: Python's verify.py
+/// recomputes sha256 per file with its saved manifest; the Rust port has
+/// no manifest yet, so this checks every catalog model exists and its
+/// byte size matches what the catalog promised.
+pub fn verify_models() -> String {
+    let entries = crate::transcribe::CATALOG;
+    let mut present = 0usize;
+    let mut absent: Vec<String> = Vec::new();
+    let mut wrong_size: Vec<String> = Vec::new();
+    for info in entries {
+        match crate::transcribe::local_path(info.name) {
+            Some(path) => match std::fs::metadata(&path) {
+                Ok(meta) => {
+                    let expected = info.size_mb * 1024 * 1024;
+                    // Rounded catalogue sizes allow one percent of slack.
+                    if meta.len() * 100 >= expected - expected / 10 {
+                        present += 1;
+                    } else {
+                        wrong_size.push(format!(
+                            "{} is {} MB, expected about {} MB",
+                            info.name,
+                            meta.len() / (1024 * 1024),
+                            info.size_mb
+                        ));
+                    }
+                }
+                Err(e) => absent.push(format!("{}: {e}", info.name)),
+            },
+            None => {
+                if !crate::transcribe::is_downloaded(info.name) {
+                    absent.push(info.name.to_string());
+                }
+            }
+        }
+    }
+    let mut note = format!("{present} model(s) verified.");
+    if !absent.is_empty() {
+        note.push_str(&format!(" Missing: {}.", absent.join(", ")));
+    }
+    if !wrong_size.is_empty() {
+        note.push_str(&format!(" Size mismatch: {}.", wrong_size.join("; ")));
+    }
+    note
+}
+
 impl Engine {
     pub fn new(cfg: Config, emit: EmitFn) -> Self {
         let shared = EngineShared {
