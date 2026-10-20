@@ -288,7 +288,7 @@ fn dictation_section<'a>(app: &'a App, p: &Palette) -> Vec<Element<'a>> {
         "Test your microphone",
         "Speak normally. The bar should reach about halfway.",
         &[],
-        Some(widgets::level_meter(0.0, p)),
+        Some(widgets::level_meter(app.level, p)),
         p,
     ));
     out.extend(section_card("Microphone", "", rows, p));

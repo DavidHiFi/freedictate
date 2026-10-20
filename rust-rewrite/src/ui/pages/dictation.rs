@@ -3,10 +3,8 @@
 //! and the entry into settings; this port keeps exactly those bindings and
 //! dresses them with the Fluent widget set.
 //!
-//! The level meter is idle: the audio module exposes no live level feed
-//! (its snapshots exist only at take boundaries), so the meter renders at
-//! zero until an event kind carries a level. That is a recorded gap, not a
-//! broken binding.
+//! The level meter is live: ui::level samples the audio module's shared
+//! level and raises Message::Level at ~50 ms.
 
 use crate::ui::widgets;
 use crate::ui::{App, Element, Message};
@@ -33,7 +31,7 @@ pub fn view(app: &App) -> Element<'_> {
                     Message::TogglePause,
                     &p,
                 ),
-                widgets::level_meter(0.0, &p),
+                widgets::level_meter(app.level, &p),
                 widgets::sub(
                     "The level meter fills while the microphone hears you.",
                     &p,

@@ -33,6 +33,24 @@ pub const RATE: u32 = 16000;
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 const STOP_POLL: Duration = Duration::from_millis(20);
 
+/// Process-wide live mic level for the UI (0..1 RMS from the running
+/// capture stream; 0.0 when idle). One atomic write per callback block;
+/// the settings mic meter and the dictation meter read it through the
+/// ui::level subscription, replacing the take-boundary-only snapshots.
+static LIVE_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Publish a live level (called only from the capture/data callback path).
+fn live_set(value: f32) {
+    LIVE_LEVEL.store((value.max(0.0).min(1.0)).to_bits(), Ordering::Relaxed);
+}
+
+/// The live level (0..1) the running capture stream hears; 0.0 when idle.
+/// Stays independent of any one Recorder, so every window in the app can
+/// read it.
+pub fn live_level() -> f32 {
+    f32::from_bits(LIVE_LEVEL.load(Ordering::Relaxed))
+}
+
 /// Stored device name + display name. cpal's WASAPI host reports the full
 /// friendly name directly, so the 31-character MME truncation in audio.py
 /// never applies and name == label.
@@ -301,6 +319,7 @@ impl State {
         let peak = chunk.iter().fold(0.0f32, |m, x| m.max(x.abs()));
         self.chunks.push(chunk.to_vec());
         self.level = rms;
+        live_set(rms);
         if peak > self.peak {
             self.peak = peak;
         }
@@ -441,6 +460,7 @@ impl Recorder {
         let mut snapshot = lock_state(&self.state);
         snapshot.level = 0.0;
         self.level = 0.0;
+        live_set(0.0);
         // Peak keeps the take's value, like stop() in audio.py.
         self.peak = snapshot.peak;
         Some(std::mem::take(&mut snapshot.chunks))

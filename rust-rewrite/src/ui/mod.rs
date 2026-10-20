@@ -24,6 +24,7 @@ pub(crate) mod theme;
 pub(crate) mod widgets;
 mod overlay;
 mod icons;
+pub(crate) mod level;
 
 /// Events that reach the subscription while `run` is active.
 static EVENT_QUEUE: OnceLock<Mutex<std::sync::mpsc::Receiver<(String, Value)>>> = OnceLock::new();
@@ -433,7 +434,12 @@ impl App {
     }
 
     fn subscription(&self) -> iced::Subscription<Message> {
-        iced::Subscription::run(events_stream)
+        // The event pump doubles as the 500 ms tick; the level subscription
+        // samples the mic level separately at 50 ms for the meters.
+        iced::Subscription::batch(vec![
+            iced::Subscription::run(events_stream),
+            level::subscribe(),
+        ])
     }
 
     // ------------------------------------------------------------- view
