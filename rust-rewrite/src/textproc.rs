@@ -212,6 +212,36 @@ pub struct Replacement {
     pub replace: String,
 }
 
+/// The saved "replacements" config list [{"find": str, "replace": str}]
+/// parsed for clean(). Mirrors Python: entries that are not objects, that
+/// miss "find", or whose find is blank after trimming are skipped;
+/// "replace" missing strings as empty.
+pub fn replacements_from_config(value: Option<&serde_json::Value>) -> Vec<Replacement> {
+    let mut out = Vec::new();
+    let Some(entries) = value.and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for entry in entries {
+        let Some(object) = entry.as_object() else {
+            continue;
+        };
+        let Some(find) = object.get("find").and_then(|f| f.as_str()) else {
+            continue;
+        };
+        let find = find.trim().to_string();
+        if find.is_empty() {
+            continue;
+        }
+        let replace = object
+            .get("replace")
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+            .to_string();
+        out.push(Replacement { find, replace });
+    }
+    out
+}
+
 pub fn apply_replacements(text: &str, replacements: &[Replacement]) -> String {
     let mut text = text.to_string();
     for r in replacements {

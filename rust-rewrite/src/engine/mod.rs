@@ -1077,7 +1077,9 @@ fn run_take(shared: &Arc<EngineShared>, take: &TakeJob) {
         capitalize: lock(&shared.cfg).bool_value("capitalize"),
         end_punctuation: lock(&shared.cfg).bool_value("end_punctuation"),
         repeats: lock(&shared.cfg).bool_value("remove_repeats"),
-        replacements: vec![],       // replacements not yet configured in this build
+        replacements: crate::textproc::replacements_from_config(
+            lock(&shared.cfg).get("replacements"),
+        ),
         language: Some(lock(&shared.cfg).string_value("language")),
     };
     // Check if active model forces English-only language for cleaning
@@ -1099,8 +1101,13 @@ fn run_take(shared: &Arc<EngineShared>, take: &TakeJob) {
         if reason.is_empty() {
             let vocab = lock(&shared.cfg).string_value("vocabulary");
             if let Some(out) = crate::writer::rewrite(&cleaned, &model, &vocab, 30.0) {
-                // replacements config is not parsed yet (same gap as clean())
-                cleaned = crate::textproc::apply_replacements(&out, &[]);
+                // The same replacements also fix up the AI's tidy-up output.
+                cleaned = crate::textproc::apply_replacements(
+                    &out,
+                    &crate::textproc::replacements_from_config(
+                        lock(&shared.cfg).get("replacements"),
+                    ),
+                );
             }
         } else if !shared.tidy_warned.swap(true, Ordering::SeqCst) {
             (shared.emit)(
