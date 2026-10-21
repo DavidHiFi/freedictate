@@ -67,10 +67,8 @@ Type: filesandordirs; Name: "{app}\_internal"
 Name: "{autoprograms}\FreeDictate"; Filename: "{app}\FreeDictate.exe"; AppUserModelID: "DavidHiFi.FreeDictate"; Comment: "Offline dictation: hold a shortcut, speak, let go"
 Name: "{autodesktop}\FreeDictate"; Filename: "{app}\FreeDictate.exe"; AppUserModelID: "DavidHiFi.FreeDictate"; Tasks: desktopicon
 
-[Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "FreeDictate"; ValueData: """{app}\FreeDictate.exe"" --background"; Tasks: startup; Flags: uninsdeletevalue
-
 [Run]
+Filename: "{app}\FreeDictate.exe"; Parameters: "--register-task"; Tasks: startup; Flags: runhidden shellexec; Verb: runas
 Filename: "{app}\FreeDictate.exe"; Description: "Open FreeDictate now"; Flags: nowait postinstall skipifsilent
 ; Silent updates started from inside the app relaunch it in the tray.
 Filename: "{app}\FreeDictate.exe"; Parameters: "--background"; Flags: nowait; Check: IsAppUpdate

@@ -143,6 +143,14 @@ def run_elevated(*args: str, wait: bool = True) -> int:
 
 # ------------------------------------------------------------- autostart
 
+def remove_duplicate_run_key() -> None:
+    """The installer used to autostart through a Run key; the task replaced it.
+    A copy started by the task deletes any stray key so startup stays single."""
+    if task_enabled() and run_key_enabled():
+        set_run_key(False)
+        log.info("Removed the leftover FreeDictate Run key; the startup task owns autostart")
+
+
 def autostart_enabled() -> bool:
     return run_key_enabled() or task_enabled()
 

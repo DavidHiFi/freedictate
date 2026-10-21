@@ -456,6 +456,7 @@ def run(argv: list[str]) -> int:
     if _signal_running("background" if background else f"show:{page or ''}"):
         return 0
     QLocalServer.removeServer(SERVER_NAME)
+    system.remove_duplicate_run_key()
     server = QLocalServer()
     server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
     if not server.listen(SERVER_NAME):
