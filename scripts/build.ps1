@@ -64,7 +64,10 @@ if (-not (Test-Path "$Root\assets\freedictate.ico")) {
 # --- tests ------------------------------------------------------------------
 if (-not $SkipTests) {
   Write-Host "== tests =="
-  $env:FREEDICTATE_HOME = Join-Path $env:TEMP "freedictate-build-tests"
+  # Per-run home: a shared %TEMP% dir let a settings-saving test leave a stale
+  # settings.json (the user's own values) that failed test_privacy_switches on
+  # the next run (2026-10-22).
+  $env:FREEDICTATE_HOME = Join-Path $env:TEMP "freedictate-build-tests-$PID"
   # Own scratch root, so a stale or locked %TEMP%\pytest-of-* dir can't break the build.
   Invoke-Native $Python -m pytest tests -q "--basetemp=$(Join-Path $env:TEMP 'freedictate-build-pytest')"
 }
