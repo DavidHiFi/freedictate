@@ -29,11 +29,13 @@ from . import paths
 from .log import log
 
 RECORD = paths.DATA / "audio-restore.json"
+MIC_RECORD = paths.DATA / "mic-privacy-restore.json"
 _RESCAN_INTERVAL = 0.25   # seconds between mid-take session re-scans
 _MIDTAKE_REV = 3          # record format: sessions carry their key
 
 _worker: _Worker | None = None
 _worker_lock = threading.Lock()
+_capture_failure = threading.Event()
 
 
 def _get_worker() -> _Worker:
@@ -101,6 +103,8 @@ class _State:
         self.ducked: dict[str, tuple[int, float, bool, object]] = {}
         self.endpoint = ""                   # id of the endpoint we ducked
         self.rescan_at = 0.0
+        self.capture_active = False
+        self.capture_muted: dict[str, tuple[int, float, bool, object]] = {}
 
 
 # ------------------------------------------------------------------ helpers
@@ -141,6 +145,35 @@ def _enumerate():
             out.append((_session_key(s, pid, n), pid, float(v.GetMasterVolume()), bool(v.GetMute()), v))
         except Exception:
             log.debug("Session %s unreadable; skipping", getattr(s, "ProcessId", "?"), exc_info=True)
+    return out
+
+
+def _enumerate_capture():
+    """Enumerate sessions on every active capture endpoint.
+
+    Unlike GetAllSessions(), which only returns render sessions, this opens
+    IAudioSessionManager2 on each active capture endpoint. Any enumeration or
+    session-read failure is fatal: privacy must not claim success partially.
+    """
+    import comtypes
+    from pycaw.constants import DEVICE_STATE, EDataFlow
+    from pycaw.pycaw import AudioSession, AudioUtilities, IAudioSessionControl2, IAudioSessionManager2
+
+    out = []
+    for device in AudioUtilities.GetAllDevices(EDataFlow.eCapture.value, DEVICE_STATE.ACTIVE.value):
+        manager = device._dev.Activate(
+            IAudioSessionManager2._iid_, comtypes.CLSCTX_INPROC_SERVER, None
+        ).QueryInterface(IAudioSessionManager2)
+        sessions = manager.GetSessionEnumerator()
+        for index in range(sessions.GetCount()):
+            control = sessions.GetSession(index).QueryInterface(IAudioSessionControl2)
+            session = AudioSession(control)
+            pid = int(session.ProcessId)
+            if pid <= 0:
+                continue
+            volume = session.SimpleAudioVolume
+            key = f"{device.id}|{_session_key(session, pid, index)}"
+            out.append((key, pid, float(volume.GetMasterVolume()), bool(volume.GetMute()), volume))
     return out
 
 
@@ -275,6 +308,7 @@ def recover() -> None:
     put every session in it back. Safe to call when nothing was ducked."""
 
     def run(state: _State) -> None:
+        _recover_capture_privacy()
         if state.active or not RECORD.exists():
             return
         try:
@@ -324,3 +358,127 @@ def recover() -> None:
     ok, err = _get_worker().call(run)
     if not ok:
         log.warning("Audio restore recovery failed: %s", err)
+
+
+def _recover_capture_privacy() -> None:
+    if not MIC_RECORD.exists():
+        return
+    try:
+        rec = json.loads(MIC_RECORD.read_text(encoding="utf-8"))
+        wanted = {str(s["key"]): (float(s["volume"]), bool(s["muted"]))
+                  for s in rec.get("sessions", [])}
+        live = {key: v for key, _pid, _volume, _muted, v in _enumerate_capture()}
+        failures = []
+        for key, (volume, muted) in wanted.items():
+            control = live.get(key)
+            if control is None:
+                continue
+            try:
+                control.SetMasterVolume(volume, None)
+                control.SetMute(muted, None)
+            except Exception as e:
+                failures.append(e)
+        if failures:
+            raise RuntimeError(f"could not recover {len(failures)} capture session(s)") from failures[0]
+        MIC_RECORD.unlink(missing_ok=True)
+        log.info("Recovered microphone privacy settings from a previous run")
+    except Exception:
+        log.exception("Microphone privacy recovery failed; restore record kept at %s", MIC_RECORD)
+
+
+def _write_mic_record(state: _State) -> None:
+    sessions = [{"key": key, "pid": pid, "volume": volume, "muted": muted}
+                for key, (pid, volume, muted, _v) in state.capture_muted.items()]
+    try:
+        paths.DATA.mkdir(parents=True, exist_ok=True)
+        tmp = MIC_RECORD.with_suffix(f".json.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"version": 1, "sessions": sessions}, indent=1), encoding="utf-8")
+        os.replace(tmp, MIC_RECORD)
+    except OSError:
+        log.exception("Could not write the microphone privacy restore record to %s", MIC_RECORD)
+        raise
+
+
+def _start_capture_privacy(state: _State) -> None:
+    if state.capture_active:
+        return
+    _capture_failure.clear()
+    mine = os.getpid()
+    try:
+        for key, pid, volume, muted, control in _enumerate_capture():
+            if pid == mine or key in state.capture_muted:
+                continue
+            state.capture_muted[key] = (pid, volume, muted, control)
+            _write_mic_record(state)
+            control.SetMute(True, None)
+            if not bool(control.GetMute()):
+                raise RuntimeError(f"capture session {pid} did not accept mute")
+        state.capture_active = True
+        log.info("Microphone privacy on: %d capture session(s) muted", len(state.capture_muted))
+    except Exception:
+        try:
+            _stop_capture_privacy(state)
+        finally:
+            _capture_failure.set()
+        raise
+
+
+def _rescan_capture_privacy(state: _State) -> None:
+    if not state.capture_active:
+        return
+    mine = os.getpid()
+    for key, pid, volume, muted, control in _enumerate_capture():
+        if pid == mine:
+            continue
+        if key not in state.capture_muted:
+            state.capture_muted[key] = (pid, volume, muted, control)
+            _write_mic_record(state)
+        control.SetMute(True, None)
+        if not bool(control.GetMute()):
+            raise RuntimeError(f"capture session {pid} did not accept mute")
+
+
+def _stop_capture_privacy(state: _State) -> None:
+    failures = []
+    for key, (_pid, volume, muted, control) in list(state.capture_muted.items()):
+        try:
+            control.SetMasterVolume(volume, None)
+            control.SetMute(muted, None)
+            if abs(float(control.GetMasterVolume()) - volume) > 0.001 or bool(control.GetMute()) != muted:
+                raise RuntimeError(f"capture session {key} did not restore original settings")
+        except Exception as e:
+            failures.append(e)
+    if failures:
+        _write_mic_record(state)
+        raise RuntimeError(f"could not restore {len(failures)} capture session(s)") from failures[0]
+    state.capture_muted.clear()
+    state.capture_active = False
+    MIC_RECORD.unlink(missing_ok=True)
+
+
+def start_capture_privacy() -> None:
+    ok, err = _get_worker().call(_start_capture_privacy)
+    if not ok:
+        raise RuntimeError(f"microphone privacy could not be enforced: {err}") from err
+
+
+def rescan_capture_privacy() -> None:
+    def run(state: _State) -> None:
+        try:
+            _rescan_capture_privacy(state)
+        except Exception:
+            log.exception("Microphone privacy was lost during a take; restoring sessions")
+            _capture_failure.set()
+            _stop_capture_privacy(state)
+    _get_worker().post(run)
+
+
+def capture_privacy_failed() -> bool:
+    """Non-blocking signal for the hotkey loop to end an unprotected take."""
+    return _capture_failure.is_set()
+
+
+def stop_capture_privacy() -> None:
+    ok, err = _get_worker().call(_stop_capture_privacy)
+    if not ok:
+        log.error("Microphone privacy restore failed: %s", err)

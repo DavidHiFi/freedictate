@@ -624,3 +624,23 @@ def test_closing_settings_hides_it_and_keeps_the_window(qapp, env):
     assert win.isVisible()
     win.dispose()
     win.close()
+
+
+def test_reopening_window_does_not_reapply_native_frame_or_backdrop(qapp, monkeypatch):
+    calls = {"frame": 0, "backdrop": 0}
+    win = FluentWindow("reopen regression")
+    monkeypatch.setattr(native, "add_frame_styles", lambda hwnd: calls.__setitem__("frame", calls["frame"] + 1))
+    monkeypatch.setattr(win, "_apply_dwm", lambda: calls.__setitem__("backdrop", calls["backdrop"] + 1))
+    monkeypatch.setattr(win, "_sync_margins", lambda: None)
+    monkeypatch.setattr(win, "_record_normal", lambda: None)
+    monkeypatch.setattr(win, "_apply_caption", lambda: None)
+    try:
+        win.show()
+        qapp.processEvents()
+        win.hide()
+        qapp.processEvents()
+        win.show()
+        qapp.processEvents()
+        assert calls == {"frame": 1, "backdrop": 1}
+    finally:
+        win.close()

@@ -69,6 +69,23 @@ if (-not $SkipTests) {
   Invoke-Native $Python -m pytest tests -q "--basetemp=$(Join-Path $env:TEMP 'freedictate-build-pytest')"
 }
 
+# --- dependency guard -------------------------------------------------------
+# 2026-10-22: a build made with the system Python bundled tokenizers 1.0.0-rc.3
+# (its Tokenizer has no token_to_id) and every Whisper take failed with
+# "tokenizers.Tokenizer object has no attribute token_to_id". Refuse to ship a
+# bundle whose tokenizers is not the version requirements.txt pins.
+Write-Host "== dependency guard =="
+$wantTk = [regex]::Match((Get-Content "$Root\requirements.txt" -Raw), '(?m)^\s*tokenizers==([^\s#]+)').Groups[1].Value
+if (-not $wantTk) { throw "Could not read the tokenizers pin from requirements.txt" }
+$haveTk = & $Python -c "import tokenizers; print(tokenizers.__version__)"
+if ($LASTEXITCODE -ne 0) { throw "Build Python ($Python) cannot import tokenizers" }
+if ("$haveTk".Trim() -ne $wantTk) {
+  throw "Build Python ($Python) has tokenizers $haveTk but requirements.txt pins $wantTk. " +
+        "Build with packages\FreeDictate-Repo\.venv-build (scripts\build.ps1), never the system " +
+        "Python: tokenizers 1.0.0-rc.x removed Tokenizer.token_to_id, which faster-whisper 1.2.1 needs."
+}
+Write-Host "tokenizers $haveTk == pinned $wantTk"
+
 # --- frozen build -----------------------------------------------------------
 $exe = "$Root\dist\FreeDictate\FreeDictate.exe"
 if (-not $SkipPyInstaller) {

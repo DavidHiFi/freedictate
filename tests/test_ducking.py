@@ -56,6 +56,7 @@ def worker(monkeypatch, tmp_path):
     w = SyncWorker()
     monkeypatch.setattr(ducking, "_get_worker", lambda: w)
     monkeypatch.setattr(ducking, "RECORD", tmp_path / "audio-restore.json")
+    monkeypatch.setattr(ducking, "MIC_RECORD", tmp_path / "mic-privacy-restore.json")
     monkeypatch.setattr(ducking, "_endpoint_id", lambda: "endpoint-a")
     return w
 
@@ -192,3 +193,77 @@ def test_recover_matches_sessions_by_key(worker):
     ducking.recover()
     assert (b.volume, b.muted) == (0.25, False)
     assert (a.volume, a.muted) == (1.0, True)     # the other session is left alone
+
+
+def test_capture_privacy_mutes_other_capture_sessions_and_restores(worker, monkeypatch):
+    mine = FakeVolume(0.8, False)
+    discord = FakeVolume(0.6, False)
+    already_muted = FakeVolume(0.5, True)
+    monkeypatch.setattr(ducking, "_enumerate_capture",
+                        lambda: [("mine", ducking.os.getpid(), .8, False, mine),
+                                 ("discord", 123, .6, False, discord),
+                                 ("muted", 456, .5, True, already_muted)])
+    ducking.start_capture_privacy()
+    assert not mine.muted
+    assert discord.muted and already_muted.muted
+    ducking.stop_capture_privacy()
+    assert (discord.volume, discord.muted) == (.6, False)
+    assert (already_muted.volume, already_muted.muted) == (.5, True)
+
+
+def test_capture_privacy_fails_closed_if_any_foreign_session_cannot_mute(worker, monkeypatch):
+    good, bad = FakeVolume(.7, False), FakeVolume(.4, False)
+    def fail_mute(muted, ctx=None):
+        raise RuntimeError("access denied")
+    bad.SetMute = fail_mute
+    monkeypatch.setattr(ducking, "_enumerate_capture",
+                        lambda: [("good", 123, .7, False, good), ("bad", 456, .4, False, bad)])
+    ok, err = worker.call(lambda state: ducking._start_capture_privacy(state))
+    assert not ok and isinstance(err, RuntimeError)
+    assert not good.muted
+    assert not worker.state.capture_active
+
+
+def test_capture_privacy_rescan_mutes_new_sessions_and_restores_them(worker, monkeypatch):
+    first = FakeVolume(.7, False)
+    current = [("first", 123, .7, False, first)]
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: current)
+    ducking.start_capture_privacy()
+    late = FakeVolume(.4, False)
+    current.append(("late", 456, .4, False, late))
+    ducking.rescan_capture_privacy()
+    assert first.muted and late.muted
+    ducking.stop_capture_privacy()
+    assert (first.volume, first.muted) == (.7, False)
+    assert (late.volume, late.muted) == (.4, False)
+    assert not ducking.MIC_RECORD.exists()
+
+
+def test_failed_capture_privacy_rescan_sets_nonblocking_failure(worker, monkeypatch):
+    first = FakeVolume(.7, False)
+    current = [("first", 123, .7, False, first)]
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: current)
+    ducking.start_capture_privacy()
+    late = FakeVolume(.4, False)
+    original_set_mute = late.SetMute
+    def reject_mute(muted, ctx=None):
+        if muted:
+            raise RuntimeError("session refused mute")
+        original_set_mute(muted, ctx)
+    late.SetMute = reject_mute
+    current.append(("late", 456, .4, False, late))
+    ducking.rescan_capture_privacy()
+    assert ducking.capture_privacy_failed()
+    assert not first.muted and not late.muted
+    ducking.stop_capture_privacy()
+
+
+def test_capture_privacy_crash_recovery_restores_saved_sessions(worker, monkeypatch):
+    session = FakeVolume(1.0, True)
+    monkeypatch.setattr(ducking, "_enumerate_capture",
+                        lambda: [("session-key", 123, 1.0, True, session)])
+    ducking.MIC_RECORD.write_text(json.dumps({"version": 1, "sessions": [
+        {"key": "session-key", "pid": 123, "volume": .35, "muted": False}]}))
+    ducking._recover_capture_privacy()
+    assert (session.volume, session.muted) == (.35, False)
+    assert not ducking.MIC_RECORD.exists()

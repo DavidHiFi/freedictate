@@ -276,11 +276,12 @@ class FluentWindow(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
-        h = self.hwnd()
-        if not self._native_tb:
-            native.add_frame_styles(h)
-        self._apply_dwm()
-        self._chrome_applied = True
+        if not self._chrome_applied:
+            h = self.hwnd()
+            if not self._native_tb:
+                native.add_frame_styles(h)
+            self._apply_dwm()
+            self._chrome_applied = True
         self._sync_margins()
         QTimer.singleShot(0, self._record_normal)
         QTimer.singleShot(0, self._apply_caption)
