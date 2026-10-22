@@ -57,7 +57,6 @@ def worker(monkeypatch, tmp_path):
     monkeypatch.setattr(ducking, "_get_worker", lambda: w)
     monkeypatch.setattr(ducking, "RECORD", tmp_path / "audio-restore.json")
     monkeypatch.setattr(ducking, "MIC_RECORD", tmp_path / "mic-privacy-restore.json")
-    monkeypatch.setattr(ducking, "_endpoint_id", lambda: "endpoint-a")
     return w
 
 
@@ -132,14 +131,21 @@ def test_rescan_picks_up_a_session_that_started_mid_take(worker):
     # The late session was in the record too, so a crash would still restore it.
 
 
-def test_device_change_re_enumerates(worker):
+def test_device_change_is_just_another_rescan(worker):
+    """Audio can move to a different output device mid-take. The all-endpoint
+    rescan ducks the new device's sessions without disturbing the old ones,
+    and stop restores everything."""
     a = FakeVolume(0.6, False)
-    set_sessions(worker, [(123, [a])])
+    set_sessions(worker, [(123, [a])])               # endpoint-a only
     ducking.start(0)
     assert a.muted
-    ducking._endpoint_id = lambda: "endpoint-b"
-    ducking.rescan(0)          # old endpoint's session is unreachable now; must not crash
+    b = FakeVolume(0.8, False)
+    set_sessions(worker, [(123, [a]), (555, [b])])   # b lives on the new device
+    ducking.rescan(0)                                # must not crash or restore-clear
+    assert a.muted and b.muted
     ducking.stop()
+    assert (a.volume, a.muted) == (0.6, False)
+    assert (b.volume, b.muted) == (0.8, False)
     assert not ducking.RECORD.exists()
 
 

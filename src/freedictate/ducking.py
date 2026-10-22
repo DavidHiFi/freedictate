@@ -101,7 +101,6 @@ class _State:
         self.level = 0                       # 0 = mute, 1-100 = volume percent
         # session key -> (pid, original volume, original mute, control)
         self.ducked: dict[str, tuple[int, float, bool, object]] = {}
-        self.endpoint = ""                   # id of the endpoint we ducked
         self.rescan_at = 0.0
         self.capture_active = False
         self.capture_muted: dict[str, tuple[int, float, bool, object]] = {}
@@ -132,19 +131,36 @@ def _session_key(session, pid: int, ordinal: int) -> str:
 
 
 def _enumerate():
-    """[(key, pid, volume, muted, SimpleAudioVolume)] for every session on the
-    default render endpoint. Runs on the worker thread."""
-    from pycaw.pycaw import AudioUtilities
+    """[(key, pid, volume, muted, SimpleAudioVolume)] for every session on
+    every active render endpoint. GetAllSessions() only sees the default
+    endpoint, which misses audio playing through headsets and virtual cables.
+    Runs on the worker thread."""
+    import comtypes
+    from pycaw.constants import DEVICE_STATE, EDataFlow
+    from pycaw.pycaw import AudioSession, AudioUtilities, IAudioSessionControl2, IAudioSessionManager2
+
     out = []
     per_pid: dict[int, int] = {}
-    for s in AudioUtilities.GetAllSessions():
+    for device in AudioUtilities.GetAllDevices(EDataFlow.eRender.value, DEVICE_STATE.ACTIVE.value):
         try:
-            pid = int(s.ProcessId)
-            n = per_pid[pid] = per_pid.get(pid, -1) + 1
-            v = s.SimpleAudioVolume
-            out.append((_session_key(s, pid, n), pid, float(v.GetMasterVolume()), bool(v.GetMute()), v))
+            manager = device._dev.Activate(
+                IAudioSessionManager2._iid_, comtypes.CLSCTX_INPROC_SERVER, None
+            ).QueryInterface(IAudioSessionManager2)
+            sessions = manager.GetSessionEnumerator()
         except Exception:
-            log.debug("Session %s unreadable; skipping", getattr(s, "ProcessId", "?"), exc_info=True)
+            log.debug("No session manager on render endpoint %s; skipping", device.id, exc_info=True)
+            continue
+        for index in range(sessions.GetCount()):
+            try:
+                control = sessions.GetSession(index).QueryInterface(IAudioSessionControl2)
+                session = AudioSession(control)
+                pid = int(session.ProcessId)
+                v = session.SimpleAudioVolume
+                n = per_pid[pid] = per_pid.get(pid, -1) + 1
+                out.append((f"{device.id}|{_session_key(session, pid, n)}", pid,
+                            float(v.GetMasterVolume()), bool(v.GetMute()), v))
+            except Exception:
+                log.debug("Session %s unreadable on %s; skipping", index, device.id, exc_info=True)
     return out
 
 
@@ -175,14 +191,6 @@ def _enumerate_capture():
             key = f"{device.id}|{_session_key(session, pid, index)}"
             out.append((key, pid, float(volume.GetMasterVolume()), bool(volume.GetMute()), volume))
     return out
-
-
-def _endpoint_id() -> str:
-    from pycaw.pycaw import AudioUtilities
-    try:
-        return AudioUtilities.GetSpeakers().id or ""
-    except Exception:
-        return ""
 
 
 def _apply_duck(v, level: int) -> None:
@@ -225,7 +233,6 @@ def start(level: int) -> None:
         if state.active:
             state.level = level
             return
-        state.endpoint = _endpoint_id()
         mine = os.getpid()
         for key, pid, volume, muted, v in _enumerate():
             if pid == mine or key in state.ducked:
@@ -244,23 +251,14 @@ def start(level: int) -> None:
 
 
 def rescan(level: int) -> None:
-    """Re-apply the duck to sessions that appeared mid-take, and follow a
-    change of the default output device. Non-blocking."""
+    """Re-apply the duck to sessions that appeared mid-take, on any output
+    device. Non-blocking."""
 
     def run(state: _State) -> None:
         if not state.active:
             return
         state.level = level
         mine = os.getpid()
-        endpoint = _endpoint_id()
-        if endpoint and endpoint != state.endpoint:
-            # The old endpoint's sessions are gone; put back whatever still
-            # answers, then duck the new endpoint's sessions.
-            log.info("Output device changed mid-take; re-enumerating sessions")
-            for _pid, volume, muted, v in state.ducked.values():
-                _restore_one(v, volume, muted)
-            state.ducked.clear()
-            state.endpoint = endpoint
         added = False
         for key, pid, volume, muted, v in _enumerate():
             if pid == mine:
@@ -288,7 +286,6 @@ def _stop_op(state: _State) -> None:
         restored += 1
     state.ducked.clear()
     state.active = False
-    state.endpoint = ""
     try:
         RECORD.unlink(missing_ok=True)
     except OSError:
