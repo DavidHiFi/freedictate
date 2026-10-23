@@ -68,7 +68,6 @@ class Engine:
         self._take_app = ""
         self.suspended = False     # True while Settings records a new hotkey
         self._tidy_warned = False  # "AI tidy-up isn't ready" is said once per session
-        self._duck_rescan_at = 0.0  # monotonic deadline for the mid-take session re-scan
         self._last_used = time.monotonic()  # last dictation activity; drives idle VRAM release
         self._cancel_matcher = self._make_cancel_matcher()
         self._take_seq = 0          # takes handed to the transcriber so far
@@ -430,12 +429,7 @@ class Engine:
                     elif stop_press:
                         self._cancel_queued()
                 else:
-                    if now - self._duck_rescan_at >= ducking._RESCAN_INTERVAL:
-                        self._duck_rescan_at = now
-                        if self.cfg["isolate_output_while_dictating"]:
-                            ducking.rescan(int(self.cfg["isolate_output_level"]))
-                        if self.cfg["mic_privacy_while_dictating"]:
-                            ducking.rescan_capture_privacy()
+                    # The ducking worker re-scans for new sessions by itself.
                     if self.cfg["mic_privacy_while_dictating"] and ducking.capture_privacy_failed():
                         log.error("Microphone privacy failed during the take; stopping it")
                         cancel = True
@@ -466,36 +460,38 @@ class Engine:
             time.sleep(0.01)
 
     def _begin(self) -> bool:
-        exclusive = bool(self.cfg["mic_privacy_while_dictating"])
+        private = bool(self.cfg["mic_privacy_while_dictating"])
         try:
             self._take_app = output.foreground_process()[1]
-            if self.cfg["isolate_output_while_dictating"]:
-                ducking.start(int(self.cfg["isolate_output_level"]))
+        except Exception:
+            self._take_app = ""
+        if private:
+            # Every other app's mic goes quiet before ours opens. In the old
+            # order a call heard the first half second of each take.
+            try:
+                ducking.start_capture_privacy()
+            except Exception as e:
+                log.exception("Microphone privacy could not be turned on")
+                ducking.stop_capture_privacy()
+                return self._start_failed("Couldn't keep your mic private", e)
+        try:
             self.recorder.voice_threshold = max(0.004, float(self.cfg["silence_peak"]) * 2)
             try:
-                self.recorder.start(self.cfg["input_device"], exclusive=exclusive)
+                self.recorder.start(self.cfg["input_device"], exclusive=private)
             except Exception:
-                if not exclusive:
+                if not private:
                     raise
-                # Exclusive capture can lose the race to another holder. A
-                # shared stream is safe only after every other capture
-                # session has been muted and verified.
+                # Exclusive capture can lose the race to another holder. Shared
+                # is safe here: every other app's mic session is already muted.
                 log.warning("Exclusive capture failed; falling back to shared", exc_info=True)
                 self.recorder.start(self.cfg["input_device"])
-            if exclusive:
-                try:
-                    ducking.start_capture_privacy()
-                except Exception:
-                    self.recorder.stop()
-                    raise
         except Exception as e:
             log.exception("Microphone failed to open")
-            ducking.stop_capture_privacy()
-            ducking.stop()   # never leave other apps' audio ducked
-            title = "Mic privacy couldn't be enforced" if exclusive and "privacy" in str(e).lower() else "Couldn't open the microphone"
-            self.emit("error", {"title": title, "text": _short(e)})
-            audio.play("error", self.cfg["sound_volume"] if self.cfg["sounds"] else 0)
-            return False
+            if private:
+                ducking.stop_capture_privacy()
+            return self._start_failed("Couldn't open the microphone", e)
+        if self.cfg["isolate_output_while_dictating"]:
+            ducking.start(int(self.cfg["isolate_output_level"]))   # returns at once
         self._touch()
         if self.model is None:
             # Reloading after an idle unload (or a failed load). Recording
@@ -505,6 +501,11 @@ class Engine:
         self._set_state("listening")
         audio.play("start", self.cfg["sound_volume"] if self.cfg["sounds"] else 0)
         return True
+
+    def _start_failed(self, title: str, e: Exception) -> bool:
+        self.emit("error", {"title": title, "text": _short(e)})
+        audio.play("error", self.cfg["sound_volume"] if self.cfg["sounds"] else 0)
+        return False
 
     def _cancel_queued(self) -> None:
         """The stop key while a take is being written out. The decode itself
@@ -542,10 +543,10 @@ class Engine:
             self._jobs.put(Take(data, secs, self._take_app, seq=self._take_seq))
         finally:
             # Esc, max-seconds, silence stop and the happy path all restore
-            # the other apps' audio exactly once, here.
+            # the other apps' audio exactly once, here, after our mic closed.
+            ducking.stop_capture_privacy()
             if ducking.available():
                 ducking.stop()
-            ducking.stop_capture_privacy()
 
     def toggle_pause(self) -> bool:
         self.paused = not self.paused  # the hotkey loop cancels a take in progress

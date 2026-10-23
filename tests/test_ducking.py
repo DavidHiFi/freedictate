@@ -5,6 +5,8 @@ enumerator is faked, so these prove the bookkeeping: what gets ducked,
 what gets restored, and what survives a crash in the record file.
 """
 import json
+import logging
+import time
 
 import pytest
 
@@ -63,12 +65,41 @@ def worker(monkeypatch, tmp_path):
 def set_sessions(worker, sessions):
     """sessions: list of (pid, [FakeVolume, ...]) — a pid may own several.
     Each FakeVolume is one session; its identity is the session key, the way
-    the instance identifier stays fixed across real re-enumerations."""
+    the instance identifier stays fixed across real re-enumerations. Every
+    enumeration reads the sessions' current values, like Windows does."""
     flat = []
     for pid, vols in sessions:
         for v in vols:
-            flat.append((f"session-{id(v)}|{pid}", pid, v.volume, v.muted, v))
-    ducking._enumerate = lambda: flat
+            flat.append((f"session-{id(v)}|{pid}", pid, v))
+    ducking._enumerate = lambda: [(key, pid, v.volume, v.muted, v) for key, pid, v in flat]
+
+
+def tick(worker):
+    """One round of the worker's own mid-take upkeep."""
+    ok, err = worker.call(ducking._tick)
+    assert ok, err
+
+
+class CountingVolume(FakeVolume):
+    def __init__(self, volume=1.0, muted=False):
+        super().__init__(volume, muted)
+        self.mute_calls = 0
+
+    def SetMute(self, m, ctx=None):
+        self.mute_calls += 1
+        super().SetMute(m, ctx)
+
+
+@pytest.fixture
+def live_worker(monkeypatch, tmp_path):
+    """The real worker thread, with fake sessions and a fast re-scan."""
+    monkeypatch.setattr(ducking, "RECORD", tmp_path / "audio-restore.json")
+    monkeypatch.setattr(ducking, "MIC_RECORD", tmp_path / "mic-privacy-restore.json")
+    monkeypatch.setattr(ducking, "_RESCAN_INTERVAL", 0.05)
+    w = ducking._Worker()
+    monkeypatch.setattr(ducking, "_get_worker", lambda: w)
+    yield w
+    w.post(None)
 
 
 def test_new_settings_are_validated():
@@ -124,7 +155,7 @@ def test_rescan_picks_up_a_session_that_started_mid_take(worker):
     ducking.start(0)
     late = FakeVolume(0.9, False)
     set_sessions(worker, [(123, [FakeVolume(0.6, False)]), (555, [late])])
-    ducking.rescan(0)
+    tick(worker)
     assert late.muted
     ducking.stop()
     assert late.volume == 0.9 and late.muted is False
@@ -141,7 +172,7 @@ def test_device_change_is_just_another_rescan(worker):
     assert a.muted
     b = FakeVolume(0.8, False)
     set_sessions(worker, [(123, [a]), (555, [b])])   # b lives on the new device
-    ducking.rescan(0)                                # must not crash or restore-clear
+    tick(worker)                                # must not crash or restore-clear
     assert a.muted and b.muted
     ducking.stop()
     assert (a.volume, a.muted) == (0.6, False)
@@ -180,11 +211,11 @@ def test_rescan_restores_a_new_session_from_an_already_ducked_process(worker):
     assert first.muted
     second = FakeVolume(0.4, False)
     set_sessions(worker, [(321, [first, second])])
-    ducking.rescan(0)
+    tick(worker)
     assert second.muted
     rec = json.loads(ducking.RECORD.read_text())
     assert len(rec["sessions"]) == 2 and all(s["key"] for s in rec["sessions"])
-    ducking.rescan(0)          # a re-enumeration must not overwrite the originals
+    tick(worker)          # a re-enumeration must not overwrite the originals
     ducking.stop()
     assert (first.volume, first.muted) == (0.7, False)
     assert (second.volume, second.muted) == (0.4, False)
@@ -237,7 +268,7 @@ def test_capture_privacy_rescan_mutes_new_sessions_and_restores_them(worker, mon
     ducking.start_capture_privacy()
     late = FakeVolume(.4, False)
     current.append(("late", 456, .4, False, late))
-    ducking.rescan_capture_privacy()
+    tick(worker)
     assert first.muted and late.muted
     ducking.stop_capture_privacy()
     assert (first.volume, first.muted) == (.7, False)
@@ -258,7 +289,7 @@ def test_failed_capture_privacy_rescan_sets_nonblocking_failure(worker, monkeypa
         original_set_mute(muted, ctx)
     late.SetMute = reject_mute
     current.append(("late", 456, .4, False, late))
-    ducking.rescan_capture_privacy()
+    tick(worker)
     assert ducking.capture_privacy_failed()
     assert not first.muted and not late.muted
     ducking.stop_capture_privacy()
@@ -273,3 +304,100 @@ def test_capture_privacy_crash_recovery_restores_saved_sessions(worker, monkeypa
     ducking._recover_capture_privacy()
     assert (session.volume, session.muted) == (.35, False)
     assert not ducking.MIC_RECORD.exists()
+
+
+# ------------------------------------------------- 2026-10-24 audit regressions
+
+def test_rescan_does_not_resend_a_mute_already_in_place(worker):
+    """Every re-scan used to call SetMute on every session, so each app got a
+    volume-change notice four times a second for the whole take."""
+    a = CountingVolume(0.6, False)
+    set_sessions(worker, [(123, [a])])
+    ducking.start(0)
+    for _ in range(3):
+        tick(worker)
+    assert a.mute_calls == 1
+    ducking.stop()
+    assert (a.volume, a.muted) == (0.6, False)
+
+
+def test_dropping_to_a_level_never_makes_a_quieter_app_louder(worker):
+    quiet = FakeVolume(0.10, False)
+    loud = FakeVolume(0.90, False)
+    set_sessions(worker, [(123, [quiet]), (456, [loud])])
+    ducking.start(25)
+    assert quiet.volume == 0.10
+    assert loud.volume == 0.25
+    ducking.stop()
+    assert (quiet.volume, loud.volume) == (0.10, 0.90)
+
+
+def test_worker_catches_a_session_that_starts_mid_take_on_its_own(live_worker, monkeypatch):
+    """Nobody queues re-scans any more: the worker finds new sessions itself."""
+    first, late = FakeVolume(0.6, False), FakeVolume(0.9, False)
+    current = [("a", 123, first)]
+    monkeypatch.setattr(ducking, "_enumerate", lambda: [(k, p, v.volume, v.muted, v) for k, p, v in current])
+    ducking.start(0)
+    current.append(("b", 555, late))
+    deadline = time.monotonic() + 2
+    while not late.muted and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert late.muted
+    ducking.stop()
+    assert (first.muted, late.muted) == (False, False)
+
+
+def test_restore_is_not_held_up_by_slow_scans(live_worker, monkeypatch):
+    """The hotkey loop used to queue a full re-scan every 250 ms. A scan took
+    100-185 ms, so long takes built a backlog and the restore at the end
+    waited behind it until it timed out (log, 2026-10-24 12:29 AM)."""
+    a = FakeVolume(0.6, False)
+
+    def slow():
+        time.sleep(0.2)
+        return [("a", 123, a.volume, a.muted, a)]
+    monkeypatch.setattr(ducking, "_enumerate", slow)
+    ducking.start(0)
+    time.sleep(1.0)
+    t = time.monotonic()
+    ducking.stop()
+    assert time.monotonic() - t < 0.6
+    assert (a.volume, a.muted) == (0.6, False)
+
+
+def test_mic_restore_skips_sessions_whose_app_has_exited(worker, monkeypatch):
+    gone = FakeVolume(.6, False)
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [("gone", 4242, gone.volume, gone.muted, gone)])
+    ducking.start_capture_privacy()
+
+    def expired(*a, **k):
+        raise OSError("the session expired with its app")
+    gone.SetMute = gone.SetMasterVolume = expired
+    monkeypatch.setattr(ducking, "_pid_alive", lambda pid: False)
+    ducking.stop_capture_privacy()
+    assert not worker.state.capture_muted and not worker.state.capture_active
+    assert not ducking.MIC_RECORD.exists()
+
+
+def test_a_failed_mic_restore_is_retried_until_it_works(worker, monkeypatch, caplog):
+    """A restore that failed used to wait for the next app start, so a call
+    partner could not hear you until then."""
+    caplog.set_level(logging.INFO, logger="freedictate")
+    s = FakeVolume(.6, False)
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [("s", 4242, s.volume, s.muted, s)])
+    monkeypatch.setattr(ducking, "_pid_alive", lambda pid: True)
+    ducking.start_capture_privacy()
+    real = FakeVolume.SetMute
+
+    def busy(m, ctx=None):
+        if not m:
+            raise OSError("busy")
+        real(s, m)
+    s.SetMute = busy
+    ducking.stop_capture_privacy()
+    assert s.muted and ducking.MIC_RECORD.exists()
+    del s.SetMute
+    tick(worker)
+    assert not s.muted
+    assert not ducking.MIC_RECORD.exists()
+    assert "Microphone privacy off: 1 capture session(s) restored" in caplog.text
