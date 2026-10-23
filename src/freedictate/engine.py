@@ -475,7 +475,7 @@ class Engine:
             # Every other app's mic goes quiet before ours opens. In the old
             # order a call heard the first half second of each take.
             try:
-                ducking.start_capture_privacy()
+                ducking.start_capture_privacy(audio.endpoint_id(self.cfg["input_device"]))
             except Exception as e:
                 log.exception("Microphone privacy could not be turned on")
                 ducking.stop_capture_privacy()

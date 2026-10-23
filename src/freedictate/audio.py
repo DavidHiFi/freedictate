@@ -142,9 +142,9 @@ def _endpoint_names() -> dict[str, str]:
         return {}
 
 
-def _full_name(mme_index: int) -> str | None:
-    """Full friendly name of the physical device behind a PortAudio MME input,
-    through its endpoint ID; None when Windows can't say."""
+def _endpoint_of(mme_index: int) -> str | None:
+    """Core Audio endpoint ID behind a PortAudio MME input; None when Windows
+    can't say."""
     sd = _sd()
     devices = sd.query_devices()
     name = devices[mme_index]["name"]
@@ -153,9 +153,47 @@ def _full_name(mme_index: int) -> str | None:
     ordinal = sum(1 for i, d in enumerate(devices[:mme_index])
                   if d["hostapi"] == mme and d["name"] == name)
     ids = [eid for pname, eid in _wavein_endpoints() if pname == name]
-    if ordinal >= len(ids):
+    return ids[ordinal] if ordinal < len(ids) else None
+
+
+def _full_name(mme_index: int) -> str | None:
+    """Full friendly name of the physical device behind a PortAudio MME input,
+    through its endpoint ID; None when Windows can't say."""
+    eid = _endpoint_of(mme_index)
+    return _endpoint_names().get(eid) if eid else None
+
+
+_endpoint_ids: dict[str, str] = {}
+
+
+def endpoint_id(name: str) -> str | None:
+    """Endpoint ID of the microphone a take records from: the stored device,
+    or the MME default when none is set. None when it can't be identified.
+    Remembered like the WASAPI match; a device re-scan forgets it."""
+    if not name:
+        return _find_endpoint_id(name)   # the Windows default can change any time
+    if name not in _endpoint_ids:
+        found = _find_endpoint_id(name)
+        if found is None:
+            return None
+        _endpoint_ids[name] = found
+    return _endpoint_ids[name]
+
+
+def _find_endpoint_id(name: str) -> str | None:
+    try:
+        sd = _sd()
+        if name:
+            index = resolve(name)
+        else:
+            mme = next((i for i, a in enumerate(sd.query_hostapis()) if a["name"] == "MME"), None)
+            index = sd.query_hostapis()[mme]["default_input_device"] if mme is not None else None
+        if index is None or index < 0:
+            return None
+        return _endpoint_of(index)
+    except Exception:
+        log.debug("Could not identify the recording endpoint", exc_info=True)
         return None
-    return _endpoint_names().get(ids[ordinal])
 
 
 _native_matches: dict[str, tuple[int, float, int]] = {}
@@ -163,6 +201,7 @@ _native_matches: dict[str, tuple[int, float, int]] = {}
 
 def forget_device_matches() -> None:
     _native_matches.clear()
+    _endpoint_ids.clear()
 
 
 def _wasapi_native(name: str) -> tuple[int, float, int] | None:

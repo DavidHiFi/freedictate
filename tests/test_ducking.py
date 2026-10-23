@@ -62,6 +62,12 @@ def worker(monkeypatch, tmp_path):
     return w
 
 
+@pytest.fixture(autouse=True)
+def no_capture_endpoints(monkeypatch):
+    """Endpoint mute is off the table unless a test hands over endpoints."""
+    monkeypatch.setattr(ducking, "_enumerate_capture_endpoints", lambda: [])
+
+
 def set_sessions(worker, sessions):
     """sessions: list of (pid, [FakeVolume, ...]) — a pid may own several.
     Each FakeVolume is one session; its identity is the session key, the way
@@ -401,3 +407,83 @@ def test_a_failed_mic_restore_is_retried_until_it_works(worker, monkeypatch, cap
     assert not s.muted
     assert not ducking.MIC_RECORD.exists()
     assert "Microphone privacy off: 1 capture session(s) restored" in caplog.text
+
+
+# ------------------------------------- 2026-10-24 endpoint mute (call partner heard you)
+
+def endpoints(monkeypatch, *eps):
+    """eps: (endpoint id, FakeVolume standing in for IAudioEndpointVolume, reader names)."""
+    monkeypatch.setattr(ducking, "_enumerate_capture_endpoints", lambda: list(eps))
+
+
+def test_privacy_mutes_every_other_mic_device_and_leaves_ours_alone(worker, monkeypatch):
+    """Discord heard the user through a take with only its session muted, so
+    privacy also mutes the device itself, the way the Windows mute does."""
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    ours, discord, user_muted = FakeVolume(1, False), FakeVolume(1, False), FakeVolume(1, True)
+    endpoints(monkeypatch, ("ours", ours, set()), ("discord", discord, {"discord.exe"}),
+              ("user-muted", user_muted, set()))
+    ducking.start_capture_privacy("ours")
+    assert discord.muted and not ours.muted
+    rec = json.loads(ducking.MIC_RECORD.read_text())
+    assert rec["endpoints"] == ["discord"]
+    ducking.stop_capture_privacy()
+    assert not discord.muted and not ours.muted
+    assert user_muted.muted            # the user's own mute is not ours to undo
+    assert not ducking.MIC_RECORD.exists()
+
+
+def test_privacy_never_mutes_a_device_an_audio_router_is_reading(worker, monkeypatch):
+    """Voicemeeter or a mixer may read the hardware mic and feed our virtual
+    input; muting the hardware would silence the take itself."""
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    hw = FakeVolume(1, False)
+    endpoints(monkeypatch, ("hw", hw, {"voicemeeter8x64.exe", "discord.exe"}))
+    ducking.start_capture_privacy("virtual")
+    assert not hw.muted
+    ducking.stop_capture_privacy()
+
+
+def test_privacy_mutes_a_device_that_appears_mid_take(worker, monkeypatch):
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    headset = FakeVolume(1, False)
+    current = []
+    monkeypatch.setattr(ducking, "_enumerate_capture_endpoints", lambda: list(current))
+    ducking.start_capture_privacy("ours")
+    current.append(("headset", headset, set()))
+    tick(worker)
+    assert headset.muted
+    ducking.stop_capture_privacy()
+    assert not headset.muted
+
+
+def test_privacy_skips_every_device_when_ours_is_unknown(worker, monkeypatch):
+    """Without knowing which device the take records from, endpoint mute
+    could silence the take; session mute still runs."""
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    a = FakeVolume(1, False)
+    endpoints(monkeypatch, ("a", a, set()))
+    ducking.start_capture_privacy(None)
+    assert not a.muted
+    ducking.stop_capture_privacy()
+
+
+def test_privacy_unmutes_our_own_device_if_a_crash_left_it_muted(worker, monkeypatch):
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    ours = FakeVolume(1, True)
+    endpoints(monkeypatch, ("ours", ours, set()))
+    ducking.MIC_RECORD.write_text(json.dumps({"version": 1, "sessions": [], "endpoints": ["ours"]}))
+    ducking._recover_capture_privacy()
+    assert not ours.muted
+    assert not ducking.MIC_RECORD.exists()
+
+
+def test_session_mute_is_reasserted_when_an_app_unmutes_itself(worker, monkeypatch):
+    s = FakeVolume(.6, False)
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [("s", 123, s.volume, s.muted, s)])
+    ducking.start_capture_privacy()
+    s.muted = False                    # the app turned its own mute off
+    tick(worker)
+    assert s.muted
+    ducking.stop_capture_privacy()
+    assert not s.muted

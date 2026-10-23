@@ -18,7 +18,7 @@ def started(tmp_path, monkeypatch):
     eng.model = object()
     order = []
     monkeypatch.setattr(output, "foreground_process", lambda: (0, "notepad.exe"))
-    monkeypatch.setattr(ducking, "start_capture_privacy", lambda: order.append("mute other mics"))
+    monkeypatch.setattr(ducking, "start_capture_privacy", lambda own=None: order.append("mute other mics"))
     monkeypatch.setattr(ducking, "stop_capture_privacy", lambda: order.append("unmute other mics"))
     monkeypatch.setattr(ducking, "start", lambda level: order.append("quiet other apps"))
     monkeypatch.setattr(ducking, "stop", lambda: order.append("restore other apps"))
@@ -36,7 +36,7 @@ def test_other_mics_go_quiet_before_ours_opens(started):
 def test_mic_never_opens_when_privacy_cannot_be_turned_on(started, monkeypatch):
     eng, order = started
 
-    def refuse():
+    def refuse(own=None):
         order.append("mute other mics")
         raise RuntimeError("a capture session refused mute")
     monkeypatch.setattr(ducking, "start_capture_privacy", refuse)

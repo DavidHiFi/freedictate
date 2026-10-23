@@ -19,6 +19,14 @@ changed, and removed only after a successful restore. If the app dies
 mid-take, the next start re-applies the restore from those files. A restore
 that fails while the app runs is retried on the worker every second.
 
+Mic privacy works at two levels. Each foreign capture session is muted, and
+so is every other recording device (the endpoint mute Windows itself uses).
+Session mute alone let a Discord call hear the user (2026-10-24); endpoint
+mute is honoured by every shared-mode reader and Discord watches it too.
+The device the take records from is never endpoint-muted, nor is a device an
+audio router (Voicemeeter, VB-Audio Matrix, ...) is reading, since that
+router may be what feeds our input.
+
 Restore is keyed per session by its instance identifier: a process can own
 several sessions (Flow.Launcher held two) and can open a new one mid-take,
 so a per-pid record would leave the extras muted. The endpoint master volume
@@ -44,6 +52,10 @@ _MAX_RETRIES = 30         # then the record files wait for the next start
 _MIDTAKE_REV = 3          # record format: sessions carry their key
 _DEVICE_STATE_ACTIVE = 1
 _RENDER, _CAPTURE = 0, 1  # EDataFlow
+# Processes that read a microphone to feed a virtual one. A device they read
+# keeps its endpoint mute off: our own input may come through them.
+_ROUTERS = ("voicemeeter", "vbaudiomatrix", "vbcable", "nvidia broadcast", "sonar",
+            "wavelink", "krisp", "equalizerapo", "audiorelay")
 
 _worker: _Worker | None = None
 _worker_lock = threading.Lock()
@@ -123,12 +135,16 @@ class _State:
         self.ducked: dict[str, tuple[int, float, bool, object]] = {}
         self.capture_active = False
         self.capture_muted: dict[str, tuple[int, float, bool, object]] = {}
+        # endpoint id -> IAudioEndpointVolume we muted (it was unmuted before)
+        self.endpoints_muted: dict[str, object] = {}
+        self.own_endpoint: str | None = None
         self.tick_at = 0.0
         self.retries = 0
 
     def busy(self) -> bool:
         """A take is running, or a restore still owes sessions."""
-        return self.active or self.capture_active or bool(self.ducked) or bool(self.capture_muted)
+        return (self.active or self.capture_active or bool(self.ducked) or bool(self.capture_muted)
+                or bool(self.endpoints_muted))
 
 
 # ------------------------------------------------------------------ helpers
@@ -227,6 +243,35 @@ def _enumerate_capture():
     return [s for s in _sessions(_CAPTURE, strict=True) if s[1] > 0]
 
 
+def _enumerate_capture_endpoints():
+    """[(endpoint id, IAudioEndpointVolume, {lower-case process names reading
+    it})] for every active recording device. Runs on the worker thread."""
+    import comtypes
+    import psutil
+    from pycaw.pycaw import IAudioEndpointVolume
+
+    readers: dict[str, set[str]] = {}
+    for key, pid, _volume, _muted, _control in _sessions(_CAPTURE, strict=False):
+        try:
+            name = psutil.Process(pid).name().lower()
+        except Exception:
+            continue
+        readers.setdefault(key.split("|", 1)[0], set()).add(name)
+    out = []
+    devices = _device_enumerator().EnumAudioEndpoints(_CAPTURE, _DEVICE_STATE_ACTIVE)
+    for i in range(devices.GetCount()):
+        try:
+            device = devices.Item(i)
+            device_id = device.GetId()
+            control = device.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_INPROC_SERVER, None) \
+                .QueryInterface(IAudioEndpointVolume)
+        except Exception:
+            log.debug("No endpoint volume on recording device %s; skipping", i, exc_info=True)
+            continue
+        out.append((device_id, control, readers.get(device_id, set())))
+    return out
+
+
 def _apply_duck(v, level: int, original: float, volume: float, muted: bool) -> None:
     """Put one session at the duck level, never louder than it was. Skipped
     when it's already there, so apps aren't sent a volume-change notice on
@@ -317,10 +362,11 @@ def _stop_op(state: _State) -> None:
 def _write_mic_record(state: _State) -> None:
     sessions = [{"key": key, "pid": pid, "volume": volume, "muted": muted}
                 for key, (pid, volume, muted, _v) in state.capture_muted.items()]
+    record = {"version": 1, "sessions": sessions, "endpoints": list(state.endpoints_muted)}
     try:
         paths.DATA.mkdir(parents=True, exist_ok=True)
         tmp = MIC_RECORD.with_suffix(f".json.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps({"version": 1, "sessions": sessions}, indent=1), encoding="utf-8")
+        tmp.write_text(json.dumps(record, indent=1), encoding="utf-8")
         os.replace(tmp, MIC_RECORD)
     except OSError:
         log.exception("Could not write the microphone privacy restore record to %s", MIC_RECORD)
@@ -339,17 +385,57 @@ def _mute_capture_sessions(state: _State) -> None:
             new = True
     if new:
         _write_mic_record(state)
-    for _key, pid, _volume, muted, control in live:
+    for key, pid, _volume, muted, control in live:
         if not muted:
+            if state.capture_active and not state.capture_muted[key][2]:
+                log.info("Microphone privacy: app %d unmuted its mic mid-take; muting it again", pid)
             control.SetMute(True, None)
             if not bool(control.GetMute()):
                 raise RuntimeError(f"capture session {pid} did not accept mute")
+    _mute_capture_endpoints(state)
+
+
+def _mute_capture_endpoints(state: _State) -> None:
+    """Mute every recording device except ours and those an audio router
+    reads. Best effort: session mute already covers each app, so a device that
+    refuses is logged, not fatal."""
+    if not state.own_endpoint:
+        return
+    for device_id, control, readers in _enumerate_capture_endpoints():
+        if device_id == state.own_endpoint or device_id in state.endpoints_muted:
+            continue
+        if any(r in name for name in readers for r in _ROUTERS):
+            continue
+        try:
+            if bool(control.GetMute()):
+                continue           # muted by the user; not ours to restore
+            state.endpoints_muted[device_id] = control
+            _write_mic_record(state)
+            control.SetMute(True, None)
+            if not bool(control.GetMute()):
+                raise RuntimeError("mute did not stick")
+        except Exception as e:
+            log.warning("Microphone privacy: could not mute recording device %s (%s)", device_id, e)
+
+
+def _restore_endpoints(state: _State) -> list[Exception]:
+    failures = []
+    for device_id, control in list(state.endpoints_muted.items()):
+        try:
+            control.SetMute(False, None)
+        except Exception as e:
+            # A device unplugged mid-take is gone; only a live one is owed.
+            if device_id in {d for d, _c, _r in _enumerate_capture_endpoints()}:
+                failures.append(e)
+                continue
+        del state.endpoints_muted[device_id]
+    return failures
 
 
 def _restore_capture(state: _State) -> None:
     """Put every muted capture session back; a session whose app has exited
     counts as restored. Raises while anything live is still owed."""
-    failures: list[Exception] = []
+    failures: list[Exception] = _restore_endpoints(state)
     restored = 0
     for key, (pid, volume, muted, control) in list(state.capture_muted.items()):
         try:
@@ -373,9 +459,10 @@ def _restore_capture(state: _State) -> None:
     log.info("Microphone privacy off: %d capture session(s) restored", restored)
 
 
-def _start_capture_privacy(state: _State) -> None:
+def _start_capture_privacy(state: _State, own_endpoint: str | None = None) -> None:
     if state.capture_active:
         return
+    state.own_endpoint = own_endpoint
     _capture_failure.clear()
     try:
         _mute_capture_sessions(state)
@@ -388,12 +475,13 @@ def _start_capture_privacy(state: _State) -> None:
     state.capture_active = True
     state.retries = 0
     state.tick_at = time.monotonic() + _RESCAN_INTERVAL
-    log.info("Microphone privacy on: %d capture session(s) muted", len(state.capture_muted))
+    log.info("Microphone privacy on: %d capture session(s) and %d other device(s) muted",
+             len(state.capture_muted), len(state.endpoints_muted))
 
 
 def _stop_capture_privacy(state: _State) -> None:
     state.capture_active = False
-    if not state.capture_muted:
+    if not (state.capture_muted or state.endpoints_muted):
         return
     try:
         _restore_capture(state)
@@ -422,24 +510,25 @@ def _tick(state: _State) -> None:
     if state.active or state.capture_active:
         state.tick_at = time.monotonic() + _RESCAN_INTERVAL
         return
-    if not (state.ducked or state.capture_muted):
+    if not (state.ducked or state.capture_muted or state.endpoints_muted):
         return
     # A restore at the end of a take failed: try again, then leave it to the
     # record files and the next start.
     state.retries += 1
-    if state.capture_muted:
+    if state.capture_muted or state.endpoints_muted:
         try:
             _restore_capture(state)
         except Exception:
             pass
     if state.ducked:
         _restore_output(state)
-    if (state.ducked or state.capture_muted) and state.retries >= _MAX_RETRIES:
-        log.error("Gave up restoring %d audio session(s); the next start restores them",
-                  len(state.ducked) + len(state.capture_muted))
+    owed = len(state.ducked) + len(state.capture_muted) + len(state.endpoints_muted)
+    if owed and state.retries >= _MAX_RETRIES:
+        log.error("Gave up restoring %d audio session(s); the next start restores them", owed)
         state.ducked.clear()
         state.capture_muted.clear()
-    if not (state.ducked or state.capture_muted):
+        state.endpoints_muted.clear()
+    if not (state.ducked or state.capture_muted or state.endpoints_muted):
         state.retries = 0
     state.tick_at = time.monotonic() + _RETRY_INTERVAL
 
@@ -540,6 +629,13 @@ def _recover_capture_privacy() -> None:
                   for s in rec.get("sessions", [])}
         live = {key: v for key, _pid, _volume, _muted, v in _enumerate_capture()}
         failures = []
+        devices = set(rec.get("endpoints", []))
+        for device_id, control, _readers in _enumerate_capture_endpoints():
+            if device_id in devices:
+                try:
+                    control.SetMute(False, None)
+                except Exception as e:
+                    failures.append(e)
         for key, (volume, muted) in wanted.items():
             control = live.get(key)
             if control is None:
@@ -557,10 +653,12 @@ def _recover_capture_privacy() -> None:
         log.exception("Microphone privacy recovery failed; restore record kept at %s", MIC_RECORD)
 
 
-def start_capture_privacy() -> None:
-    """Mute every other app's microphone session and check it took. Raises
-    when that can't be done, so the take never opens an unprotected mic."""
-    ok, err = _get_worker().call(_start_capture_privacy)
+def start_capture_privacy(own_endpoint: str | None = None) -> None:
+    """Mute every other app's microphone session, and every recording device
+    except ``own_endpoint`` (the one the take reads), and check it took.
+    Raises when a session can't be muted, so the take never opens an
+    unprotected mic."""
+    ok, err = _get_worker().call(lambda state: _start_capture_privacy(state, own_endpoint))
     if not ok:
         raise RuntimeError(f"microphone privacy could not be enforced: {err}") from err
 
