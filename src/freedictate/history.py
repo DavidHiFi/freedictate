@@ -105,6 +105,13 @@ class History:
             self._db.execute("VACUUM")
         self._changed()
 
+    def count_older_than(self, days: int) -> int:
+        if days <= 0:
+            return 0
+        with self._lock:
+            return self._db.execute("SELECT COUNT(*) FROM entries WHERE ts < ?",
+                                    (time.time() - days * 86400,)).fetchone()[0]
+
     def prune(self, days: int) -> int:
         if days <= 0:
             return 0

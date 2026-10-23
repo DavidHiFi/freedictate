@@ -69,7 +69,9 @@ class Overlay(QWidget):
             return
         g = self.geometry()
         screen = QGuiApplication.screenAt(g.center()) or QGuiApplication.primaryScreen()
-        shot = screen.grabWindow(0, g.x(), g.y(), g.width(), g.height()).toImage()
+        # grabWindow(0, ...) counts from this monitor's corner, not the desktop's.
+        at = g.topLeft() - screen.geometry().topLeft()
+        shot = screen.grabWindow(0, at.x(), at.y(), g.width(), g.height()).toImage()
         if self.kind == "frosted":
             shot = shot.scaled(W // 6, H // 6, Qt.AspectRatioMode.IgnoreAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)

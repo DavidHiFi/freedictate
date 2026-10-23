@@ -676,3 +676,132 @@ def test_reopening_window_does_not_reapply_native_frame_or_backdrop(qapp, monkey
         assert calls == {"frame": 1, "backdrop": 1}
     finally:
         win.close()
+
+
+def _control_beside(win, title, kind):
+    lbl = next(w for w in win.findChildren(QLabel) if w.text() == title)
+    node = lbl.parentWidget()
+    while node is not None and not node.findChildren(kind):
+        node = node.parentWidget()
+    return node.findChildren(kind)[0]
+
+
+def test_shortening_history_asks_before_deleting(qapp, tmp_path, monkeypatch):
+    """Choosing a shorter "Delete dictations older than" deleted history at
+    once, so arrowing through the list to look at it wiped dictations."""
+    from PySide6.QtWidgets import QComboBox, QMessageBox
+    hist = History(tmp_path / "h.db")
+    hist.add("from three days ago", 1.0, ts=time.time() - 3 * 86400)
+    hist.add("from today", 1.0)
+    answers, asked = [QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes], []
+
+    def question(parent, title, text, *a, **k):
+        asked.append(text)
+        return answers.pop(0)
+    monkeypatch.setattr(settings_mod.QMessageBox, "question", question)
+    cfg = fresh_cfg(history_days=0)
+    win = SettingsWindow(make_app(cfg, hist))
+    try:
+        combo = _control_beside(win, "Delete dictations older than", QComboBox)
+        combo.setCurrentIndex(combo.findData("1"))
+        assert asked == ["Delete 1 dictation older than 1 day? This can't be undone."]
+        assert cfg["history_days"] == 0 and combo.currentData() == "0"   # said no: nothing changes
+        combo.setCurrentIndex(combo.findData("1"))
+        assert cfg["history_days"] == 1                                   # said yes
+        combo.setCurrentIndex(combo.findData("0"))                        # longer: nothing to delete, no question
+        assert cfg["history_days"] == 0 and len(asked) == 2
+    finally:
+        win.dispose()
+        win.close()
+        hist.close()
+
+
+def test_a_quiet_failed_update_check_frees_the_button(qapp, env):
+    """An automatic check that fails reports an empty message. The handler
+    returned before re-enabling "Check now", so it stayed grey and the row
+    kept saying "Checking for updates..." until a restart."""
+    app = make_app(fresh_cfg(), env.hist)
+    win = SettingsWindow(app)
+    try:
+        app.update_busy = True
+        win._on_update_status("Checking for updates...", None)
+        assert not win.update_btn.isEnabled()
+        app.update_busy = False
+        win._on_update_status("", None)
+        assert win.update_btn.isEnabled()
+        assert "Checking" not in win.update_row.desc.text()
+    finally:
+        win.dispose()
+        win.close()
+
+
+def test_bar_snapshot_grabs_its_own_spot_on_a_side_monitor(qapp, env, monkeypatch):
+    """Qt's grabWindow(0, x, y) counts from the monitor's corner. The bar passed
+    desktop coordinates, so on any monitor but the main one its blur showed a
+    different part of the screen (measured on all four monitors, 2026-10-24)."""
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QPixmap
+    from freedictate.ui import overlay
+    from freedictate.ui.overlay import H, W, Overlay
+    grabbed = []
+
+    class LeftMonitor:
+        def geometry(self):
+            return QRect(-1920, 169, 1920, 1080)
+
+        def grabWindow(self, wid, x, y, w, h):
+            grabbed.append((x, y, w, h))
+            return QPixmap(w, h)
+    monkeypatch.setattr(overlay.QGuiApplication, "screenAt", lambda point: LeftMonitor())
+    engine = FakeEngine()
+    engine.recorder = SimpleNamespace(level=0.0, elapsed=lambda: 0.0)
+    monkeypatch.setattr(native, "backdrop_supported", lambda: True)
+    monkeypatch.setattr(native, "transparency_enabled", lambda: True)
+    bar = Overlay(engine, fresh_cfg(overlay_backdrop="blur"))
+    try:
+        bar.move(-1920 + 860, 169 + 1000)
+        bar._snapshot()
+        assert grabbed == [(860, 1000, W, H)]
+    finally:
+        bar.deleteLater()
+        pump(qapp)
+
+
+def test_a_cancelled_writing_model_download_is_not_loaded(qapp, env, monkeypatch):
+    """Cancel only stops between files, so the one big model file finished
+    anyway, and the app then loaded the model the user had cancelled."""
+    from freedictate import writer
+    win = SettingsWindow(make_app(fresh_cfg(ai_tidy=True), env.hist))
+    loaded = []
+    try:
+        monkeypatch.setattr(writer, "engine_installed", lambda: True)
+        monkeypatch.setattr(writer, "ready", lambda name: "")
+        monkeypatch.setattr(writer, "prepare", lambda name: loaded.append(name))
+
+        def download(name, progress, cancel):
+            cancel.set()                       # the user pressed Cancel mid-file
+            raise InterruptedError("Download cancelled")
+        monkeypatch.setattr(writer, "download_model", download)
+        win._ai_get_clicked()
+        deadline = time.monotonic() + 5
+        while win._ai_job.get("busy") and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not win._ai_job.get("busy")
+        assert loaded == []
+    finally:
+        win.dispose()
+        win.close()
+
+
+def test_every_file_result_banner_can_be_closed(qapp, env):
+    """"No speech found" had no close button and stayed until the next file."""
+    win = SettingsWindow(make_app(fresh_cfg(), env.hist))
+    try:
+        for text in ("", "error: broken file", "some words"):
+            win._on_file_result("talk.wav", text)
+            names = [win.file_banner.actions.itemAt(i).widget().accessibleName()
+                     for i in range(win.file_banner.actions.count())]
+            assert "Close" in names, text
+    finally:
+        win.dispose()
+        win.close()

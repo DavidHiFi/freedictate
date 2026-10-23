@@ -1095,7 +1095,9 @@ class SettingsWindow(FluentWindow):
             finally:
                 job["busy"] = False
                 job["refresh"] = True   # picked up on the UI thread by _ai_tick
-                if self.cfg["ai_tidy"] and not writer.ready(name):
+                # A cancel can't stop the one big model file midway, so it may
+                # be on disk now; still don't load what the user cancelled.
+                if self.cfg["ai_tidy"] and not cancel.is_set() and not writer.ready(name):
                     writer.prepare(name)
         threading.Thread(target=work, daemon=True, name="writer-download").start()
         self._ai_timer.start()
@@ -1274,7 +1276,21 @@ class SettingsWindow(FluentWindow):
         card.add(Row("Save my dictations", "Stored only on this PC.", keep))
         days = Combo([("0", "Forever"), ("365", "1 year"), ("90", "90 days"), ("30", "30 days"), ("7", "7 days"),
                       ("1", "1 day")], str(self.cfg["history_days"]), width=180)
-        days.currentIndexChanged.connect(lambda _: self.cfg.update({"history_days": int(days.value())}))
+        def set_days() -> None:
+            # A shorter period deletes at once, so ask first: arrowing through
+            # the list to look at it used to wipe dictations.
+            new, old = int(days.value()), int(self.cfg["history_days"])
+            n = self.history.count_older_than(new) if new and (not old or new < old) else 0
+            if n and QMessageBox.question(
+                    self, "Delete old dictations",
+                    f"Delete {n:,} dictation{'' if n == 1 else 's'} older than {days.currentText().lower()}? "
+                    "This can't be undone.") != QMessageBox.StandardButton.Yes:
+                days.blockSignals(True)
+                days.setCurrentIndex(days.findData(str(old)))
+                days.blockSignals(False)
+                return
+            self.cfg.update({"history_days": new})
+        days.currentIndexChanged.connect(lambda _: set_days())
         card.add(Row("Delete dictations older than", "", days))
 
     def _focus_search(self) -> None:
@@ -1364,15 +1380,16 @@ class SettingsWindow(FluentWindow):
     def _on_file_result(self, path: str, text: str) -> None:
         self._clear_banner_actions()
         name = Path(path).name
+        close = button("", "flat", icon="x")
+        close.setAccessibleName("Close")
+        close.clicked.connect(self.file_banner.hide)
         if text.startswith("error:"):
             self.file_banner.text.setText(f"<b>{name}</b> couldn't be transcribed: {text[6:].strip()}")
-            close = button("", "flat", icon="x")
-            close.setAccessibleName("Close")
-            close.clicked.connect(self.file_banner.hide)
             self.file_banner.actions.addWidget(close)
             return
         if not text.strip():
             self.file_banner.text.setText(f"No speech found in <b>{name}</b>.")
+            self.file_banner.actions.addWidget(close)
             return
         words = len(text.split())
         self.file_banner.text.setText(f"<b>{name}</b>: {words:,} words. Copy them, or save them as a text file.")
@@ -1386,9 +1403,6 @@ class SettingsWindow(FluentWindow):
             if target:
                 Path(target).write_text(text + "\n", encoding="utf-8")
         save.clicked.connect(save_file)
-        close = button("", "flat", icon="x")
-        close.setAccessibleName("Close")
-        close.clicked.connect(self.file_banner.hide)
         for b in (copy, save, close):
             self.file_banner.actions.addWidget(b)
 
@@ -1450,9 +1464,7 @@ class SettingsWindow(FluentWindow):
         self.update_progress.setTextVisible(False)
         self.update_progress.setFixedWidth(160)
         self.update_progress.hide()
-        last = cfg["last_update_check"]
-        when = time.strftime("%d %b %Y, %I:%M %p", time.localtime(last)).lstrip("0") if last else "never"
-        self.update_row = Row(f"FreeDictate {__version__}", f"Last checked: {when}.", self.update_progress)
+        self.update_row = Row(f"FreeDictate {__version__}", self._last_checked(), self.update_progress)
         self.update_row.controls.addWidget(self.update_btn)
         card.add(self.update_row)
         if self.app.update_release:
@@ -1479,14 +1491,23 @@ class SettingsWindow(FluentWindow):
         reset.clicked.connect(self._reset_settings)
         card.add(Row("Reset all settings", "History and downloaded models are kept.", reset))
 
+    def _last_checked(self) -> str:
+        last = self.cfg["last_update_check"]
+        when = time.strftime("%d %b %Y, %I:%M %p", time.localtime(last)).lstrip("0") if last else "never"
+        return f"Last checked: {when}."
+
     @Slot(str, object)
     def _on_update_status(self, msg: str, rel) -> None:
+        busy = self.app.update_busy
+        self.update_btn.setEnabled(not busy)
         if not msg:
+            # An automatic check that failed quietly: free the row again.
+            if not busy:
+                self.update_row.desc.setText(self._last_checked())
+                self.update_progress.hide()
             return
         self.update_row.desc.setText(msg)
         self.update_row.desc.show()
-        busy = self.app.update_busy
-        self.update_btn.setEnabled(not busy)
         if rel is not None and not busy:
             notes = rel.notes.strip().splitlines()
             summary = " ".join(n.strip("-*# ") for n in notes[:3] if n.strip())[:220]
