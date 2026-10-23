@@ -3,6 +3,8 @@
 Other apps' microphones must be silenced before ours opens: Discord heard the
 first half second of every take while the old order (duck output, open the
 mic, then mute other mics) ran (measured 2026-10-24)."""
+import time
+
 import pytest
 
 from freedictate import ducking, output
@@ -42,3 +44,66 @@ def test_mic_never_opens_when_privacy_cannot_be_turned_on(started, monkeypatch):
     assert "open our mic" not in order and "quiet other apps" not in order
     assert order[-1] == "unmute other mics"
     assert any(kind == "error" for kind, _ in eng.events)
+
+
+def test_writing_model_warms_up_while_you_talk(tmp_path, monkeypatch):
+    """With "free memory right after each take" the writing model started from
+    cold after every take: about 7 s before the text arrived (log, 2026-10-24).
+    It now starts with the take and is let go when the take is done."""
+    import numpy as np
+    from freedictate import writer
+    eng, hist = make_engine(tmp_path, monkeypatch, ai_tidy=True, ai_model="standard",
+                            mic_privacy_while_dictating=False, isolate_output_while_dictating=False,
+                            isolate_output_level=0)
+    calls = []
+    monkeypatch.setattr(writer, "hold", lambda name: calls.append(("hold", name)))
+    monkeypatch.setattr(writer, "release", lambda: calls.append(("release",)))
+    monkeypatch.setattr(writer, "stop", lambda: None)
+    monkeypatch.setattr(output, "foreground_process", lambda: (0, "notepad.exe"))
+    eng.model = object()
+    try:
+        assert eng._begin()
+        assert calls == [("hold", "standard")]
+        eng._end(cancelled=True)                       # Esc: nothing to tidy
+        assert calls[-1] == ("release",)
+        calls.clear()
+        assert eng._begin()
+        monkeypatch.setattr(eng.recorder, "stop", lambda: (np.zeros(16000, dtype=np.float32), 1.0))
+        eng._end(cancelled=False)                      # queued: the transcriber lets go
+        assert calls == [("hold", "standard")]
+        eng._jobs.put(None)
+        eng._transcribe_loop()                         # silence: dropped, still let go
+        assert calls == [("hold", "standard"), ("release",)]
+    finally:
+        hist.close()
+
+
+def test_a_stuck_transcription_is_reported(tmp_path, monkeypatch):
+    """At 1:00 AM on 2026-10-24 a decode never returned, and every later take
+    queued silently behind it until the app restarted."""
+    import threading
+    import numpy as np
+    from freedictate import engine as engine_mod
+    eng, hist = make_engine(tmp_path, monkeypatch)
+    monkeypatch.setattr(engine_mod, "STUCK_AFTER", 0.2)
+    gate = threading.Event()
+
+    class Hung:
+        def transcribe(self, *a, **k):
+            gate.wait(5)
+            return iter(()), None
+    eng.model = Hung()
+    eng.ms.active = "small.en"
+    try:
+        t = threading.Thread(target=eng._decode, args=(np.zeros(1600, dtype=np.float32),))
+        t.start()
+        deadline = time.monotonic() + 3
+        while not any(k == "error" for k, _ in eng.events) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        gate.set()
+        t.join(5)
+        errors = [d for k, d in eng.events if k == "error"]
+        assert errors and errors[0]["title"] == "Transcription is stuck"
+    finally:
+        gate.set()
+        hist.close()

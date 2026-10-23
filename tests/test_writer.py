@@ -194,3 +194,19 @@ def test_both_engines_load_through_models_load(monkeypatch, tmp_path):
     assert calls[-1] == ("parakeet", "parakeet-tdt-0.6b-v2") and (dev, ct) == ("cpu", "int8")   # Parakeet is CPU by design
     models.load("parakeet-tdt-0.6b-v3", "cuda", "auto")
     assert calls[-1] == ("parakeet", "parakeet-tdt-0.6b-v3")   # each entry names its own onnx-asr model
+
+
+def test_graphics_card_is_asked_again_once_the_engine_is_downloaded(monkeypatch):
+    """Asked before the engine was downloaded, gpu() remembered "no card", so
+    after the download the tidy-up said it needed a graphics card until the
+    app restarted."""
+    monkeypatch.setattr(writer, "_gpu", None)
+    installed = [False]
+    monkeypatch.setattr(writer, "engine_installed", lambda: installed[0])
+
+    class Listed:
+        stdout = "Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4070 (12282 MiB, 11000 MiB free)\n"
+    monkeypatch.setattr(writer.subprocess, "run", lambda *a, **k: Listed())
+    assert writer.gpu() == ("", 0)
+    installed[0] = True
+    assert writer.gpu() == ("NVIDIA GeForce RTX 4070", 12282)

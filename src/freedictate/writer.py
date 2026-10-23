@@ -175,19 +175,21 @@ _gpu: tuple[str, int] | None = None
 
 def gpu() -> tuple[str, int]:
     """(name, memory in MB) of the first graphics card llama.cpp can use, or
-    ("", 0). Asked once per session; needs the engine downloaded."""
+    ("", 0). Asked once per session; needs the engine downloaded, and isn't
+    remembered until it is, so a download in this session still counts."""
     global _gpu
     if _gpu is None:
+        if not engine_installed():
+            return ("", 0)
         _gpu = ("", 0)
-        if engine_installed():
-            try:
-                out = subprocess.run([str(SERVER), "--list-devices"], capture_output=True, text=True, timeout=30,
-                                     creationflags=0x08000000).stdout
-                m = re.search(r"Vulkan0:\s*(.+?)\s*\((\d+) MiB", out)
-                if m:
-                    _gpu = (m.group(1), int(m.group(2)))
-            except (OSError, subprocess.SubprocessError):
-                log.exception("Listing graphics cards for the writing model failed")
+        try:
+            out = subprocess.run([str(SERVER), "--list-devices"], capture_output=True, text=True, timeout=30,
+                                 creationflags=0x08000000).stdout
+            m = re.search(r"Vulkan0:\s*(.+?)\s*\((\d+) MiB", out)
+            if m:
+                _gpu = (m.group(1), int(m.group(2)))
+        except (OSError, subprocess.SubprocessError):
+            log.exception("Listing graphics cards for the writing model failed")
     return _gpu
 
 
@@ -343,6 +345,20 @@ _server = _Server()
 def prepare(name: str) -> None:
     """Load the model ahead of the first take, in the background."""
     threading.Thread(target=_server.ensure, args=(name,), daemon=True, name="writer-start").start()
+
+
+def hold(name: str) -> None:
+    """A take started: start the writing model while the user talks, so the
+    tidy-up doesn't wait for a cold start (about 7 s, log 2026-10-24). The idle
+    check leaves it alone until release()."""
+    _server.busy += 1
+    prepare(name)
+
+
+def release() -> None:
+    """The take that called hold() is done; the idle limit counts from now."""
+    _server.busy = max(0, _server.busy - 1)
+    _server.last_used = time.monotonic()
 
 
 def stop() -> None:

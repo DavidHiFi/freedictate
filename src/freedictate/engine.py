@@ -10,6 +10,7 @@ to the GUI thread. Threads:
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import time
 import traceback
@@ -24,6 +25,9 @@ from .log import log
 # Whisper's favourite inventions on near-silent input.
 _PHANTOMS = {"thank you.", "thanks for watching!", "thank you for watching.", "you", "you.", "bye.", "."}
 TAP_SECONDS = 0.35  # "both" mode: a press shorter than this starts a toggle take
+# A decode longer than this (or twice the take) is stuck: a 165 s take decodes
+# in about 3 s on the GPU (log, 2026-10-24).
+STUCK_AFTER = 120.0
 
 
 @dataclass
@@ -45,6 +49,7 @@ class Take:
     file: str = ""                # set when transcribing a file instead of a take
     on_text: Callable[[str], None] | None = field(default=None, repr=False)
     seq: int = 0                  # order of the take, so the stop key can drop it; 0 is never dropped
+    writer_held: bool = False     # writer.hold() ran for this take; release it when done
 
 
 class Engine:
@@ -66,6 +71,7 @@ class Engine:
         self._download_cancel = threading.Event()
         self._matcher = hotkeys.Matcher(cfg["hotkey"]) if hotkeys.is_valid(cfg["hotkey"]) else hotkeys.Matcher("ctrl+win")
         self._take_app = ""
+        self._writer_held = False  # the take being recorded started the writing model
         self.suspended = False     # True while Settings records a new hotkey
         self._tidy_warned = False  # "AI tidy-up isn't ready" is said once per session
         self._last_used = time.monotonic()  # last dictation activity; drives idle VRAM release
@@ -494,6 +500,9 @@ class Engine:
             return self._start_failed("Couldn't open the microphone", _short(e))
         if self.cfg["isolate_output_while_dictating"]:
             ducking.start(int(self.cfg["isolate_output_level"]))   # returns at once
+        if self.cfg["ai_tidy"]:
+            writer.hold(self.cfg["ai_model"])   # starts in the background while you talk
+            self._writer_held = True
         self._touch()
         if self.model is None:
             # Reloading after an idle unload (or a failed load). Recording
@@ -542,13 +551,17 @@ class Engine:
             self._touch()
             self._set_state("transcribing")
             self._take_seq += 1
-            self._jobs.put(Take(data, secs, self._take_app, seq=self._take_seq))
+            self._jobs.put(Take(data, secs, self._take_app, seq=self._take_seq, writer_held=self._writer_held))
+            self._writer_held = False   # the transcriber releases it after the tidy-up
         finally:
             # Esc, max-seconds, silence stop and the happy path all restore
             # the other apps' audio exactly once, here, after our mic closed.
             ducking.stop_capture_privacy()
             if ducking.available():
                 ducking.stop()
+            if self._writer_held:       # nothing queued that needs the writing model
+                self._writer_held = False
+                writer.release()
 
     def toggle_pause(self) -> bool:
         self.paused = not self.paused  # the hotkey loop cancels a take in progress
@@ -594,6 +607,8 @@ class Engine:
                         self._set_state("loading")
                     else:
                         self._set_state("error")
+                if take.writer_held:
+                    writer.release()
                 self._release_after_take()
 
     def _decode(self, data) -> str:
@@ -606,11 +621,28 @@ class Engine:
             model = self.model
             if model is None:
                 raise RuntimeError("The speech model was unloaded.")
-            segments, _ = model.transcribe(
-                data, language=None if lang == "auto" else lang, beam_size=int(cfg["beam_size"]),
-                vad_filter=bool(cfg["vad"]), initial_prompt=cfg["vocabulary"].strip() or None,
-                condition_on_previous_text=False)
-            return "".join(s.text for s in segments).strip()
+            limit = max(STUCK_AFTER, 2 * len(data) / audio.RATE)
+            watch = threading.Timer(limit, self._decode_stuck, args=(limit,))
+            watch.daemon = True
+            watch.start()
+            try:
+                segments, _ = model.transcribe(
+                    data, language=None if lang == "auto" else lang, beam_size=int(cfg["beam_size"]),
+                    vad_filter=bool(cfg["vad"]), initial_prompt=cfg["vocabulary"].strip() or None,
+                    condition_on_previous_text=False)
+                return "".join(s.text for s in segments).strip()
+            finally:
+                watch.cancel()
+
+    def _decode_stuck(self, limit: float) -> None:
+        """A decode that never returns can't be interrupted, and every later
+        take queues behind it. Say so, and log where each thread is stuck."""
+        stacks = "\n".join(f"--- {t.name}\n" + "".join(traceback.format_stack(sys._current_frames()[t.ident]))
+                           for t in threading.enumerate() if t.ident in sys._current_frames())
+        log.error("The speech model hasn't answered in %.0f s. Threads:\n%s", limit, stacks)
+        self.emit("error", {"title": "Transcription is stuck",
+                            "text": "The speech model stopped answering. Quit FreeDictate from the tray "
+                                    "and start it again."})
 
     def _clean(self, raw: str) -> str:
         c = self.cfg
@@ -689,9 +721,8 @@ class Engine:
                 log.exception("History write failed")
         delivered = text + (" " if cfg["trailing_space"] and cfg["output"] != "clipboard"
                             and not text.endswith("\n") and not submit else "")
-        outcome = output.deliver(delivered, cfg["output"], cfg["restore_clipboard"], int(cfg["paste_delay_ms"]))
-        if submit and outcome in ("pasted", "typed"):
-            output.press_enter()
+        outcome = output.deliver(delivered, cfg["output"], cfg["restore_clipboard"], int(cfg["paste_delay_ms"]),
+                                 submit=submit)
         self.emit("result", {"text": text, "outcome": outcome, "seconds": take.seconds, "took": took})
         if outcome != "blocked":
             audio.play("done", vol)
