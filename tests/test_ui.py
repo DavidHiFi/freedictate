@@ -13,8 +13,9 @@ if not os.environ.get("FREEDICTATE_HOME"):
     raise RuntimeError("Set FREEDICTATE_HOME to a scratch folder before importing the UI tests")
 
 import pytest
-from PySide6.QtCore import QEventLoop, QTimer
-from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QSlider, QStyle, QStyleOptionSlider
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QTimer
+from PySide6.QtWidgets import (QAbstractButton, QApplication, QLabel, QSlider, QStyle, QStyleOptionSlider,
+                               QWidget)
 
 from freedictate import paths
 from freedictate.app import Bus
@@ -160,6 +161,37 @@ def test_processor_cores_slider_counts_physical_cores(qapp, env, monkeypatch):
     finally:
         win.dispose()
         win.close()
+
+
+def test_building_settings_shows_no_stray_windows(qapp, env):
+    """Rows used to show their description label before it had a parent, so
+    Windows created a real window for each one and closed it again: dozens of
+    windows flashed and the first tray click froze for about 10 s (measured
+    2026-10-24)."""
+    shown = []
+
+    class Spy(QObject):
+        def eventFilter(self, obj, e):
+            if e.type() == QEvent.Type.Show and isinstance(obj, QWidget) and obj.isWindow():
+                shown.append(f"{type(obj).__name__} {getattr(obj, 'text', lambda: '')()!r}")
+            return False
+
+    spy = Spy()
+    qapp.installEventFilter(spy)
+    win = None
+    try:
+        win = SettingsWindow(make_app(fresh_cfg(), env.hist))
+        assert shown == []
+        win.show()
+        for key in win.pages:          # History builds its cards on first visit
+            win.go(key)
+            pump(qapp, 6)
+        assert shown == ["SettingsWindow ''"]
+    finally:
+        qapp.removeEventFilter(spy)
+        if win is not None:
+            win.dispose()
+            win.close()
 
 
 def test_cpu_counts_never_exceed_threads():

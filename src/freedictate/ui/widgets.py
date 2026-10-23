@@ -174,15 +174,18 @@ class Row(QWidget):
         lay.setSpacing(16)
         text = QVBoxLayout()
         text.setSpacing(2)
+        # Attach the column before filling it, so every label has a parent
+        # before its visibility is set. A parentless label shown is a window of
+        # its own: one flashed on screen per row (measured 2026-10-24).
+        lay.addLayout(text, 1)
         self.title = label(title, "rowtitle")
         text.addWidget(self.title)
         self.desc = label(desc, "sub", wrap=True)
-        self.desc.setVisible(bool(desc))
         text.addWidget(self.desc)
+        self.desc.setVisible(bool(desc))
         self.note = label("", "warn", wrap=True)
-        self.note.hide()
         text.addWidget(self.note)
-        lay.addLayout(text, 1)
+        self.note.hide()
         self.controls = QHBoxLayout()
         self.controls.setSpacing(8)
         lay.addLayout(self.controls)
