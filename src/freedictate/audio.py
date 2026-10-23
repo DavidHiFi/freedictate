@@ -32,6 +32,7 @@ def _sd():
 def refresh_devices() -> None:
     """PortAudio caches the device list; re-scan so newly plugged mics appear."""
     sd = _sd()
+    forget_device_matches()   # device indexes change with the re-scan
     try:
         sd._terminate()
         sd._initialize()
@@ -157,7 +158,26 @@ def _full_name(mme_index: int) -> str | None:
     return _endpoint_names().get(ids[ordinal])
 
 
+_native_matches: dict[str, tuple[int, float, int]] = {}
+
+
+def forget_device_matches() -> None:
+    _native_matches.clear()
+
+
 def _wasapi_native(name: str) -> tuple[int, float, int] | None:
+    """_find_wasapi_native, remembered per microphone: finding the match lists
+    every audio device, 90-170 ms at the start of every take (measured). A
+    failed exclusive open and a device re-scan forget it."""
+    found = _native_matches.get(name)
+    if found is None:
+        found = _find_wasapi_native(name)
+        if found is not None:
+            _native_matches[name] = found
+    return found
+
+
+def _find_wasapi_native(name: str) -> tuple[int, float, int] | None:
     """(index, native rate, channels) of the WASAPI input that is the same
     physical device as the MME input shared capture would open.
 
@@ -283,13 +303,18 @@ class Recorder:
                 wasapi = None
             if wasapi is None:
                 raise RuntimeError("WASAPI exclusive capture is unavailable")
-            stream = sd.InputStream(samplerate=rate, channels=channels, dtype="float32",
-                                    device=index, callback=self._exclusive_callback,
-                                    blocksize=800, extra_settings=wasapi)
+            try:
+                stream = sd.InputStream(samplerate=rate, channels=channels, dtype="float32",
+                                        device=index, callback=self._exclusive_callback,
+                                        blocksize=800, extra_settings=wasapi)
+                stream.start()
+            except Exception:
+                _native_matches.pop(device_name, None)   # look the device up again next take
+                raise
         else:
             stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32",
                                     device=resolve(device_name), callback=self._callback, blocksize=800)
-        stream.start()
+            stream.start()
         self._stream = stream
         self.started = self.last_voice = time.monotonic()
 

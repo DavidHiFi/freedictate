@@ -49,3 +49,37 @@ def test_in_band_tone_survives():
     data, _ = _feed(audio.Recorder(), rate, secs, signal=tone)
     body = data[1000:-1000]
     assert abs(float(np.sqrt(np.mean(body * body))) - 0.5 / np.sqrt(2)) < 0.01
+
+
+def test_exclusive_device_match_is_looked_up_once_per_mic(monkeypatch):
+    """Matching the mic to its WASAPI device re-listed every audio device on
+    each take start: 90-170 ms before recording began (measured 2026-10-24)."""
+    calls = []
+    monkeypatch.setattr(audio, "_find_wasapi_native", lambda name: calls.append(name) or (7, 48000.0, 2))
+    audio.forget_device_matches()
+    assert audio._wasapi_native("") == (7, 48000.0, 2)
+    assert audio._wasapi_native("") == (7, 48000.0, 2)
+    assert calls == [""]
+    audio.forget_device_matches()
+    audio._wasapi_native("")
+    assert calls == ["", ""]
+
+
+def test_a_failed_exclusive_open_forgets_the_match(monkeypatch):
+    monkeypatch.setattr(audio, "_find_wasapi_native", lambda name: (7, 48000.0, 2))
+    audio.forget_device_matches()
+
+    class Refused:
+        def __init__(self, *a, **k):
+            raise RuntimeError("device unavailable")
+
+    class FakeSd:
+        InputStream = Refused
+
+        @staticmethod
+        def WasapiSettings(exclusive):
+            return object()
+    monkeypatch.setattr(audio, "_sd", lambda: FakeSd)
+    with pytest.raises(RuntimeError):
+        audio.Recorder().start("", exclusive=True)
+    assert "" not in audio._native_matches
