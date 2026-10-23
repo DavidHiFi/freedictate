@@ -272,9 +272,10 @@ def wait_for_modifiers_release(timeout: float = 2.0) -> None:
         time.sleep(0.01)
 
 
-def deliver(text: str, method: str, restore: bool, delay_ms: int) -> str:
-    """Send text to the focused app. Returns what happened, for logging:
-    'pasted', 'typed', 'copied', or 'blocked' (admin window, text left on the clipboard)."""
+def deliver(text: str, method: str, restore: bool, delay_ms: int, submit: bool = False) -> str:
+    """Send text to the focused app, then Enter when ``submit``. Returns what
+    happened, for logging: 'pasted', 'typed', 'copied', or 'blocked' (admin
+    window, text left on the clipboard)."""
     if method == "clipboard":
         set_clipboard(text)
         return "copied"
@@ -285,18 +286,26 @@ def deliver(text: str, method: str, restore: bool, delay_ms: int) -> str:
     time.sleep(delay_ms / 1000)
     if method == "type":
         type_text(text)
+        if submit:
+            press_enter()
         return "typed"
     saved = save_clipboard() if restore else None
     if not set_clipboard(text, transient=restore and saved is not None):
         if saved is not None:
             restore_clipboard(saved)   # don't leave the clipboard emptied by the failed set
         type_text(text)
+        if submit:
+            press_enter()
         return "typed"
     seq = user32.GetClipboardSequenceNumber()
     if method == "paste_shift_insert":
         _chord(VK_SHIFT, VK_INSERT, ext=True)
     else:
         _chord(VK_CONTROL, VK_V)
+    if submit:
+        # Queued right behind the paste, while the clipboard still holds the
+        # text: after the restore, a slow app could paste and send the old one.
+        press_enter()
     if saved is not None:
         # The target reads the clipboard after it handles the keystroke. Give it
         # time, then put the old contents back unless something else copied.
