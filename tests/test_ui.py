@@ -390,6 +390,24 @@ def test_history_reloads_deferred_and_reuses_cards(qapp, env):
         win.close()
 
 
+def test_words_it_should_know_is_one_per_line_and_saves_on_leave(qapp, env):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QFocusEvent
+    cfg = fresh_cfg(vocabulary="Nerd Font, Chimping,  Claude Code ,")
+    win = open_window(qapp, cfg, env)
+    try:
+        box = win._vocab_row.controls.itemAt(0).widget()
+        assert box.toPlainText() == "Nerd Font\nChimping\nClaude Code"
+        box.setPlainText("Nerd Font\nChimping, Claude Code\n\n  Kubernetes ")
+        assert cfg["vocabulary"] == "Nerd Font, Chimping,  Claude Code ,"   # not saved mid-typing
+        QApplication.sendEvent(box, QFocusEvent(QEvent.Type.FocusOut))
+        assert cfg["vocabulary"] == "Nerd Font, Chimping, Claude Code, Kubernetes"
+    finally:
+        win.close()
+        win.deleteLater()
+        pump(qapp)
+
+
 def test_silence_row_only_shows_for_press_to_start(qapp, env):
     win = open_window(qapp, fresh_cfg(hotkey_mode="hold"), env)
     try:

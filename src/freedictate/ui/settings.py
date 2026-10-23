@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, QEvent, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCompleter, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                               QMessageBox, QProgressBar, QPushButton, QScrollArea,
+                               QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
                                QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import APP_NAME, REPO_URL, __version__, audio, hotkeys, models, paths, system, writer
@@ -50,6 +50,25 @@ def _cpu_counts() -> tuple[int, int]:
     except Exception:
         cores = threads
     return max(1, min(cores, threads)), threads
+
+
+class WordBox(QPlainTextEdit):
+    """Words it should know, one per line. Saves on focus-out, like the one-line field it replaces."""
+    committed = Signal()
+
+    def __init__(self, vocabulary: str):
+        words = [w.strip() for w in vocabulary.split(",") if w.strip()]
+        super().__init__("\n".join(words))
+        # Lets the window's drag handling see this as a control, not a title bar (see _hit_widget_is_interactive).
+        self.setProperty("interactive", True)
+
+    def vocabulary(self) -> str:
+        words = (w.strip() for line in self.toPlainText().splitlines() for w in line.split(","))
+        return ", ".join(w for w in words if w)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.committed.emit()
 
 
 class Page(QScrollArea):
@@ -441,10 +460,13 @@ class SettingsWindow(FluentWindow):
         card.add(lang_row)
         self._update_lang_note()
 
-        vocab = QLineEdit(cfg["vocabulary"])
-        vocab.setPlaceholderText("Names, separated by commas")
+        # Stored comma-separated, which is the format the engine and writer read.
+        vocab = WordBox(cfg["vocabulary"])
+        vocab.setPlaceholderText("One name or term per line")
         vocab.setMinimumWidth(300)
-        vocab.editingFinished.connect(lambda: cfg.update({"vocabulary": vocab.text().strip()}))
+        vocab.setFixedHeight(120)
+        vocab.setTabChangesFocus(True)
+        vocab.committed.connect(lambda: cfg.update({"vocabulary": vocab.vocabulary()}))
         self._vocab_row = Row("Words it should know", "Helps with names and terms it would otherwise misspell.", vocab)
         card.add(self._vocab_row)
         self._update_lang_note()
