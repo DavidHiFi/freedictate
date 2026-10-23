@@ -241,6 +241,7 @@ class _Server:
         self.model = ""
         self.last_used = 0.0
         self.idle_seconds = IDLE_STOP_S
+        self.busy = 0   # tidy-ups between their ensure() and the end of their request
         threading.Thread(target=self._idle_loop, daemon=True, name="writer-idle").start()
 
     def running(self) -> bool:
@@ -310,10 +311,18 @@ class _Server:
     def _idle_loop(self) -> None:
         while True:
             time.sleep(30)
-            idle_s = getattr(self, "idle_seconds", IDLE_STOP_S)
-            if self.running() and time.monotonic() - self.last_used > idle_s:
-                log.info("Writing model idle; freeing graphics memory")
-                self.stop()
+            self._idle_check()
+
+    def _idle_check(self) -> None:
+        """Free the graphics memory after idle_seconds without a take, but never
+        while a tidy-up is starting or waiting for its answer: with a limit of
+        0 s this stopped the server mid-request (2026-10-24)."""
+        with self._lock:
+            if self.busy or not self.running() \
+                    or time.monotonic() - self.last_used <= getattr(self, "idle_seconds", IDLE_STOP_S):
+                return
+            log.info("Writing model idle; freeing graphics memory")
+            self._stop()
 
     def chat(self, system: str, text: str, timeout: float, max_tokens: int | None = None) -> str:
         self.last_used = time.monotonic()
@@ -391,6 +400,7 @@ def rewrite(text: str, name: str, vocabulary: str = "", timeout: float = 30.0) -
     if vocab:
         system += f" Spell these names exactly as written: {vocab}."
     t0 = time.monotonic()
+    _server.busy += 1
     try:
         if not _server.ensure(name):
             return None
@@ -398,6 +408,9 @@ def rewrite(text: str, name: str, vocabulary: str = "", timeout: float = 30.0) -
     except (OSError, ValueError, KeyError, IndexError, urllib.error.URLError) as e:
         log.warning("AI tidy-up failed (%s); pasting the plain transcript", e)
         return None
+    finally:
+        _server.busy -= 1
+        _server.last_used = time.monotonic()
     if not _plausible(text, out):
         log.warning("AI tidy-up answer rejected as unfaithful; pasting the plain transcript")
         return None

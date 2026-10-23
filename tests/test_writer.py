@@ -52,6 +52,33 @@ def test_dashes_bold_and_curly_quotes_are_normalised(monkeypatch):
     assert out == "I want you to update the readme, and then push it to GitHub when the tests pass. Don't wait."
 
 
+def test_idle_check_never_stops_a_tidy_up_in_progress(monkeypatch):
+    """With "free memory right after each take" the idle limit is 0 s, so the
+    30 s idle check stopped the server whenever it woke, even while it started
+    or answered: "connection was forcibly closed" (log, 2026-10-24 12:23 AM)."""
+    srv = writer._server
+    stopped = []
+    monkeypatch.setattr(srv, "running", lambda: True)
+    monkeypatch.setattr(srv, "_stop", lambda: stopped.append(True))
+    monkeypatch.setattr(srv, "idle_seconds", 0)
+    monkeypatch.setattr(writer, "ready", lambda name: "")
+
+    def ensure(name, wait=60.0):
+        srv._idle_check()          # the idle thread wakes while the server starts
+        return True
+
+    def chat(system, text, timeout, max_tokens=None):
+        srv._idle_check()          # and again mid-request
+        return TAKE
+    monkeypatch.setattr(srv, "ensure", ensure)
+    monkeypatch.setattr(srv, "chat", chat)
+    assert writer.rewrite(TAKE, "standard") == TAKE
+    assert stopped == []
+    monkeypatch.setattr(srv, "last_used", 0.0)   # idle for a long time now
+    srv._idle_check()
+    assert stopped == [True]
+
+
 def test_short_takes_and_unready_models_skip_the_model(monkeypatch):
     sent = _fake_model(monkeypatch, "x")
     assert writer.rewrite("yes please", "standard") is None
