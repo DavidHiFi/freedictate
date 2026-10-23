@@ -125,3 +125,15 @@ def test_detect_submit_ignores_other_uses():
     assert detect_submit("I need to pre-submit") == ("I need to pre-submit", False)
     assert detect_submit("hello world") == ("hello world", False)
     assert detect_submit("submit") == ("", True)
+
+
+def test_a_filler_at_a_sentence_end_keeps_the_full_stop():
+    """Removing "um." also removed the full stop, so two sentences ran
+    together: "the logs, um. Then" became "the logs, Then" (2026-10-24)."""
+    assert clean("I need to check the logs, um. Then restart it.") == "I need to check the logs. Then restart it."
+    assert clean("store uh. Then go") == "Store. Then go."
+    assert clean("So um I think, uh, we should go.") == "So I think, we should go."
+
+
+def test_german_er_is_a_word_not_a_filler():
+    assert clean("Er ist da und er kommt", language="de") == "Er ist da und er kommt."

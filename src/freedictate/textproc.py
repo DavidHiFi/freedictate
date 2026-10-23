@@ -5,16 +5,21 @@ import re
 
 # Hesitation sounds only. Words like "like" or "you know" carry meaning often
 # enough that removing them would change what was said.
-_FILLER_CORE = (r"u+h+", r"e+r+m*", r"a+h+", r"h+m+", r"m+h*m+")
-# "um" on its own: a real word in Portuguese (masculine indefinite article)
-# and German (preposition), so it is only filtered for other languages.
+_FILLER_CORE = (r"u+h+", r"a+h+", r"h+m+", r"m+h*m+")
+# "um" is a real word in Portuguese (masculine indefinite article) and German
+# (preposition), and "er" is German for "he", so those languages keep them.
 # Cf. VoxType src/text/mod.rs filler_collisions (#566).
 _FILLER_UM = r"u+m+"
+_FILLER_ER = r"e+r+m*"
 _FILLER_TAIL = r"(?![\w'])[,.]?\s*"
-_FILLER = re.compile(r"(?<![\w'])(?:" + _FILLER_UM + "|" + "|".join(_FILLER_CORE) + r")" + _FILLER_TAIL,
-                     re.IGNORECASE)
-_FILLER_STRICT = re.compile(r"(?<![\w'])(?:" + "|".join(_FILLER_CORE) + r")" + _FILLER_TAIL,
-                            re.IGNORECASE)
+
+
+def _filler_pattern(*parts: str) -> re.Pattern:
+    return re.compile(r"(?<![\w'])(?:" + "|".join(parts) + r")" + _FILLER_TAIL, re.IGNORECASE)
+
+
+_FILLER = _filler_pattern(_FILLER_UM, _FILLER_ER, *_FILLER_CORE)
+_FILLER_BY_LANG = {"pt": _filler_pattern(_FILLER_ER, *_FILLER_CORE), "de": _filler_pattern(*_FILLER_CORE)}
 
 
 def _base_lang(language: str | None) -> str:
@@ -22,9 +27,14 @@ def _base_lang(language: str | None) -> str:
 
 
 def _filler_re(language: str | None) -> re.Pattern:
-    """Hesitation-sound matcher for the take language. Portuguese and German
-    keep "um", which is ordinary vocabulary there."""
-    return _FILLER_STRICT if _base_lang(language) in ("pt", "de") else _FILLER
+    """Hesitation-sound matcher for the take language."""
+    return _FILLER_BY_LANG.get(_base_lang(language), _FILLER)
+
+
+def _drop_filler(m: re.Match) -> str:
+    """A filler goes; a full stop after it stays, so "logs, um. Then" keeps its
+    sentence break instead of becoming "logs, Then"."""
+    return ". " if "." in m.group(0) else ""
 
 # Private marks used while the text is being rebuilt; none survive clean().
 _CAP = "\x01"      # the next letter starts a sentence
@@ -170,7 +180,7 @@ def clean(raw: str, *, remove_fillers: bool = True, voice_commands: bool = True,
     if not text:
         return ""
     if remove_fillers:
-        text = _filler_re(language).sub("", text)
+        text = _filler_re(language).sub(_drop_filler, text)
         text = re.sub(r"\s+([,.!?])", r"\1", text)
         # Removing a filler can leave a connector pointing at nothing.
         text = re.sub(r"([,;:])(\s*[,;:])+", r"\1", text)   # "hello, uh, world" keeps one comma
