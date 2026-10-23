@@ -52,7 +52,9 @@ $vi = $vi -replace "filevers=\([\d, ]+\)", "filevers=($major, $minor, $patch, 0)
 $vi = $vi -replace "prodvers=\([\d, ]+\)", "prodvers=($major, $minor, $patch, 0)"
 $vi = $vi -replace 'StringStruct\("FileVersion", "[^"]+"\)', "StringStruct(`"FileVersion`", `"$Version`")"
 $vi = $vi -replace 'StringStruct\("ProductVersion", "[^"]+"\)', "StringStruct(`"ProductVersion`", `"$Version`")"
-Set-Content "$Root\packaging\version_info.txt" $vi -Encoding UTF8
+# WriteAllText: Set-Content added a newline per build and, under Windows
+# PowerShell, a byte-order mark, so the file grew a blank line every build.
+[IO.File]::WriteAllText("$Root\packaging\version_info.txt", $vi)
 
 # --- icon -------------------------------------------------------------------
 if (-not (Test-Path "$Root\assets\freedictate.ico")) {
@@ -68,8 +70,9 @@ if (-not $SkipTests) {
   # settings.json (the user's own values) that failed test_privacy_switches on
   # the next run (2026-10-22).
   $env:FREEDICTATE_HOME = Join-Path $env:TEMP "freedictate-build-tests-$PID"
-  # Own scratch root, so a stale or locked %TEMP%\pytest-of-* dir can't break the build.
-  Invoke-Native $Python -m pytest tests -q "--basetemp=$(Join-Path $env:TEMP 'freedictate-build-pytest')"
+  # Own scratch root per run: a fixed one left by an elevated build can't be
+  # deleted by a normal one (Access is denied, 2026-10-24).
+  Invoke-Native $Python -m pytest tests -q "--basetemp=$(Join-Path $env:TEMP "freedictate-build-pytest-$PID")"
 }
 
 # --- dependency guard -------------------------------------------------------

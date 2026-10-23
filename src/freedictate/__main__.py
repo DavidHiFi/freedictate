@@ -125,16 +125,18 @@ def _self_test(target: str) -> int:
     step("sounddevice", lambda: f"{len(__import__('sounddevice').query_devices())} audio devices")
 
     def audio_sessions():
-        # Output isolation drives pycaw through comtypes. Both generate code at
-        # runtime, which PyInstaller can't bundle, so only a live call proves them.
+        # Output isolation and mic privacy drive Windows Core Audio through
+        # comtypes, which generates code at runtime that PyInstaller can't
+        # bundle, so only a live call through the app's own scans proves them.
         import comtypes
-        from pycaw.pycaw import AudioUtilities
+        from . import ducking
         comtypes.CoInitialize()
         try:
-            return f"{len(AudioUtilities.GetAllSessions())} audio sessions"
+            return (f"{len(ducking._enumerate())} playback and {len(ducking._enumerate_capture())} "
+                    "recording sessions read")
         finally:
             comtypes.CoUninitialize()
-    step("output isolation (pycaw, comtypes)", audio_sessions)
+    step("output isolation and mic privacy (comtypes)", audio_sessions)
 
     def qt():
         from PySide6.QtGui import QGuiApplication
