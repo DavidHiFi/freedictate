@@ -68,6 +68,8 @@ class App(QObject):
             QTimer.singleShot(300, lambda: self.show_settings("dictation"))
         elif not background:
             QTimer.singleShot(150, self.show_settings)
+        else:
+            QTimer.singleShot(4000, self._prebuild_settings)
         log.info("FreeDictate %s started (pid %s, %s)", __version__, os.getpid(),
                  "portable" if paths.portable() else "installed")
 
@@ -209,12 +211,21 @@ class App(QObject):
         QGuiApplication.clipboard().setText(text)
 
     # ------------------------------------------------------------- windows
+    def _make_settings(self) -> None:
+        from .ui.settings import SettingsWindow
+        self.settings_window = SettingsWindow(self)
+        self.settings_window.closed.connect(lambda w=self.settings_window: self._settings_closed(w))
+
+    def _prebuild_settings(self) -> None:
+        """Build the window hidden while nothing else is going on, so the first
+        tray click only shows it. Building took about 2 s inside the running
+        app (measured 2026-10-24)."""
+        if self.settings_window is None:
+            self._make_settings()
+
     def show_settings(self, page: str | None = None) -> None:
         if self.settings_window is None:
-            from .ui.settings import SettingsWindow
-            self.settings_window = SettingsWindow(self)
-            self.settings_window.closed.connect(
-                lambda w=self.settings_window: self._settings_closed(w))
+            self._make_settings()
         w = self.settings_window
         # A kept window can be stale: history written while it was hidden, or a
         # model that changed. go() refreshes the page that is about to show.
@@ -377,7 +388,8 @@ class App(QObject):
 
     # ------------------------------------------------------------- startup
     def autostart_state(self) -> tuple[bool, bool]:
-        return system.run_key_enabled() or system.task_enabled(), system.task_enabled()
+        task = system.task_enabled()   # a schtasks query, about 0.5 s: ask once
+        return system.run_key_enabled() or task, task
 
     def set_autostart(self, enabled: bool, elevated: bool) -> str:
         err = system.set_autostart(enabled, elevated)
