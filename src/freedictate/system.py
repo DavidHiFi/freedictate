@@ -58,8 +58,9 @@ def task_exists() -> bool:
 
 
 def task_enabled() -> bool:
-    code, out = _schtasks("/query", "/tn", TASK, "/fo", "csv", "/nh")
-    return code == 0 and "Disabled" not in out
+    # The XML tags aren't translated; the CSV status column ("Disabled") is.
+    code, out = _schtasks("/query", "/tn", TASK, "/xml")
+    return code == 0 and "<Enabled>false</Enabled>" not in out
 
 
 def is_admin() -> bool:

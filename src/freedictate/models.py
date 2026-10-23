@@ -284,10 +284,6 @@ def gpu_libs_present() -> bool:
     return all((paths.CUDA_DIR / d).exists() for d in CUBLAS_DLLS)
 
 
-def _cudart_present() -> bool:
-    return all((paths.CUDA_DIR / d).exists() for d in CUDART_DLLS)
-
-
 def _cudnn_present() -> bool:
     cudnn = [p.name for p in paths.CUDA_DIR.glob("cudnn*.dll")]
     return "cudnn64_9.dll" in cudnn and len(cudnn) >= 4
