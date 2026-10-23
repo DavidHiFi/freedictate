@@ -222,6 +222,7 @@ class App(QObject):
         app (measured 2026-10-24)."""
         if self.settings_window is None:
             self._make_settings()
+            self.settings_window.warm_up()
 
     def show_settings(self, page: str | None = None) -> None:
         if self.settings_window is None:

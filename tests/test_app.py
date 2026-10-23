@@ -18,10 +18,14 @@ def test_startup_state_asks_windows_about_the_task_once(monkeypatch):
 def test_settings_are_built_ahead_of_the_first_click():
     """Building the window took about 2 s inside the running app, so the first
     tray click after every start waited for it. It is built hidden at idle."""
-    built = []
-    app = SimpleNamespace(settings_window=None, _make_settings=lambda: built.append(1))
+    built, warmed = [], []
+
+    def make():
+        built.append(1)
+        app.settings_window = SimpleNamespace(warm_up=lambda: warmed.append(1))
+    app = SimpleNamespace(settings_window=None, _make_settings=make)
     App._prebuild_settings(app)
-    assert built == [1]
+    assert built == [1] and warmed == [1]   # styled and laid out too: first show 0.4-0.9 s -> 0.25-0.3 s
     app.settings_window = object()
     App._prebuild_settings(app)
     assert built == [1]

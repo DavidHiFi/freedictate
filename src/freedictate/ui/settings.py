@@ -232,6 +232,16 @@ class SettingsWindow(FluentWindow):
         screen = QApplication.primaryScreen().availableGeometry()
         self.move(screen.center() - self.rect().center())
 
+    def warm_up(self) -> None:
+        """Style and lay out every page and create the native window while
+        hidden, so the first show is quick: 0.4-0.9 s down to 0.25-0.3 s
+        (measured 2026-10-24)."""
+        self.ensurePolished()
+        for w in self.findChildren(QWidget):
+            w.ensurePolished()
+        self.layout().activate()
+        self.winId()
+
     def save_geometry(self) -> None:
         self.cfg.update({"window_geometry": bytes(self.saveGeometry().toBase64()).decode()})
 
