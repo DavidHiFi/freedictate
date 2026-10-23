@@ -189,6 +189,7 @@ class Config:
     def __init__(self, path: Path | None = None):
         self.path = path or paths.SETTINGS
         self._lock = threading.RLock()
+        self._save_lock = threading.Lock()
         self._data = dict(DEFAULTS)
         self._listeners: list[Callable[[set[str]], None]] = []
         self.load()
@@ -226,21 +227,25 @@ class Config:
             # switch off afterwards is remembered for good.
             if raw and self._data["cpu_threads"] == 0 and "cpu_threads_350_migrated" not in raw:
                 self._data["cpu_threads"] = 6
+            if raw:
+                # Not a DEFAULTS key, so it is carried over by hand; dropping
+                # it brought the migration back on every second start.
                 self._data["cpu_threads_350_migrated"] = True
 
     def save(self) -> None:
-        with self._lock:
-            text = json.dumps(self._data, indent=2, ensure_ascii=False) + "\n"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # A unique temp name: two threads saving at once must not clobber
-        # each other's file, and an antivirus lock on the target must not
-        # leave junk behind.
-        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
-        try:
-            tmp.write_text(text, encoding="utf-8")
-            os.replace(tmp, self.path)
-        finally:
-            tmp.unlink(missing_ok=True)
+        # One save at a time, each writing the newest values: two threads
+        # saving at once could land an older snapshot last and lose a change.
+        with self._save_lock:
+            with self._lock:
+                text = json.dumps(self._data, indent=2, ensure_ascii=False) + "\n"
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # An antivirus lock on the target must not leave junk behind.
+            tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+            try:
+                tmp.write_text(text, encoding="utf-8")
+                os.replace(tmp, self.path)
+            finally:
+                tmp.unlink(missing_ok=True)
 
     def __getitem__(self, key: str) -> Any:
         with self._lock:

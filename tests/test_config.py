@@ -91,3 +91,43 @@ def test_export_import_restores_every_exported_setting(tmp_path):
     for key, value in exported.items():
         if key in DEFAULTS:
             assert b[key] == value, key
+
+
+def test_every_core_choice_survives_restarts(tmp_path):
+    """The 3.5.0 migration flag wasn't kept on load, so the next save dropped
+    it and "every core" went back to 6 on every second restart."""
+    import json
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"cpu_threads": 0, "model": "small.en"}))   # a pre-3.5 file
+    c = Config(p)
+    assert c["cpu_threads"] == 6                 # the one-time move to the 6-core cap
+    c.update({"cpu_threads": 0})                 # the user picks every core again
+    for _ in range(3):
+        c = Config(p)
+        assert c["cpu_threads"] == 0
+        c.update({"model": "base.en" if c["model"] != "base.en" else "small.en"})   # any later save
+
+
+def test_a_save_never_overwrites_a_newer_one(tmp_path, monkeypatch):
+    """Two threads saving at once shared one temp file name, so an older
+    snapshot could land last and lose the other thread's change."""
+    import json
+    import pathlib
+    import threading
+    p = tmp_path / "settings.json"
+    c = Config(p)
+    real_write = pathlib.Path.write_text
+    other = []
+
+    def write_text(self, *a, **k):
+        if not other:   # the first save: let a second thread save in between
+            t = threading.Thread(target=lambda: c.update({"sounds": False}))
+            other.append(t)
+            t.start()
+            t.join(0.3)
+        return real_write(self, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "write_text", write_text)
+    c.update({"sound_volume": 33})
+    other[0].join(5)
+    saved = json.loads(p.read_text(encoding="utf-8"))
+    assert saved["sound_volume"] == 33 and saved["sounds"] is False
