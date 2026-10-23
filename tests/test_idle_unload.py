@@ -109,7 +109,7 @@ def test_unload_waits_out_a_file_decode(tmp_path, monkeypatch):
         hist.close()
 
 
-def test_usable_when_unloaded_and_status_text_mentions_vram(tmp_path, monkeypatch):
+def test_usable_when_unloaded_and_status_text_says_memory_was_freed(tmp_path, monkeypatch):
     eng, hist = make_engine(tmp_path, monkeypatch)
     try:
         eng.model = None
@@ -117,7 +117,7 @@ def test_usable_when_unloaded_and_status_text_mentions_vram(tmp_path, monkeypatc
         eng.ms.status = "idle"
         eng.state = "ready"
         assert eng._usable() is True
-        assert "VRAM" in eng.status_text()
+        assert "graphics memory" in eng.status_text()
         eng.paused = True
         assert eng._usable() is False
     finally:

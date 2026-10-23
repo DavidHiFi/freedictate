@@ -104,7 +104,7 @@ class Engine:
             # The next take reloads it automatically.
             mode = self.cfg["hotkey_mode"]
             verb = {"hold": "Hold", "toggle": "Press", "both": "Hold or tap"}[mode]
-            return f"Unloaded to save VRAM. {verb} {hk} to dictate"
+            return f"Models unloaded to free graphics memory. {verb} {hk} to dictate"
         if ms.status == "downloading" and ms.wanted != ms.active:
             done, total = ms.progress
             pct = f" ({done * 100 // total}%)" if total else ""
@@ -473,7 +473,9 @@ class Engine:
             except Exception as e:
                 log.exception("Microphone privacy could not be turned on")
                 ducking.stop_capture_privacy()
-                return self._start_failed("Couldn't keep your mic private", e)
+                return self._start_failed("Couldn't keep your mic private",
+                                          "Dictation didn't start, so nothing was recorded. An app's "
+                                          f"microphone couldn't be silenced ({_short(e)}).")
         try:
             self.recorder.voice_threshold = max(0.004, float(self.cfg["silence_peak"]) * 2)
             try:
@@ -489,7 +491,7 @@ class Engine:
             log.exception("Microphone failed to open")
             if private:
                 ducking.stop_capture_privacy()
-            return self._start_failed("Couldn't open the microphone", e)
+            return self._start_failed("Couldn't open the microphone", _short(e))
         if self.cfg["isolate_output_while_dictating"]:
             ducking.start(int(self.cfg["isolate_output_level"]))   # returns at once
         self._touch()
@@ -502,8 +504,8 @@ class Engine:
         audio.play("start", self.cfg["sound_volume"] if self.cfg["sounds"] else 0)
         return True
 
-    def _start_failed(self, title: str, e: Exception) -> bool:
-        self.emit("error", {"title": title, "text": _short(e)})
+    def _start_failed(self, title: str, text: str) -> bool:
+        self.emit("error", {"title": title, "text": text})
         audio.play("error", self.cfg["sound_volume"] if self.cfg["sounds"] else 0)
         return False
 

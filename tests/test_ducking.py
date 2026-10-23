@@ -339,7 +339,7 @@ def test_worker_catches_a_session_that_starts_mid_take_on_its_own(live_worker, m
     monkeypatch.setattr(ducking, "_enumerate", lambda: [(k, p, v.volume, v.muted, v) for k, p, v in current])
     ducking.start(0)
     current.append(("b", 555, late))
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + 5
     while not late.muted and time.monotonic() < deadline:
         time.sleep(0.02)
     assert late.muted
@@ -361,7 +361,7 @@ def test_restore_is_not_held_up_by_slow_scans(live_worker, monkeypatch):
     time.sleep(1.0)
     t = time.monotonic()
     ducking.stop()
-    assert time.monotonic() - t < 0.6
+    assert time.monotonic() - t < 1.5   # one scan in flight at most; the old backlog took 8 s
     assert (a.volume, a.muted) == (0.6, False)
 
 

@@ -362,8 +362,8 @@ class SettingsWindow(FluentWindow):
         self.cancel_edit = HotkeyEdit(cfg["cancel_key"])
         cancel_reset = button("Reset", "flat")
         cancel_reset.setToolTip("Back to Esc")
-        cancel_row = Row("Stop key", "Stops a take at any point: while you talk, or while it's being written "
-                         "out. Click the box, then press the key you want.", self.cancel_edit)
+        cancel_row = Row("Stop key", "Cancels a take at any point, while you talk or while it's being written "
+                         "out, and nothing is pasted. Click the box, then press the key you want.", self.cancel_edit)
         cancel_row.controls.addWidget(cancel_reset)
         card.add(cancel_row)
 
@@ -458,21 +458,21 @@ class SettingsWindow(FluentWindow):
         privacy = Toggle(cfg["mic_privacy_while_dictating"])
         privacy.toggled.connect(lambda on: cfg.update({"mic_privacy_while_dictating": on}))
         card.add(Row("Keep my mic private",
-                     "Other apps, like calls, can't use the mic while I dictate. "
-                     "If the mic is busy, dictation still works and they keep it.",
+                     "Other apps, like a Discord call, hear silence from every microphone until I stop. "
+                     "If an app can't be silenced, the take doesn't start.",
                      privacy))
         isolate = Toggle(cfg["isolate_output_while_dictating"])
-        quiet = Combo([("0", "Go silent"), ("25", "Drop to 25% volume"), ("50", "Drop to 50% volume")],
+        quiet = Combo([("0", "Mute them"), ("25", "25% volume"), ("50", "50% volume")],
                       str(cfg["isolate_output_level"]), width=200)
         quiet.setEnabled(isolate.isChecked())
         quiet.currentIndexChanged.connect(lambda _: cfg.update({"isolate_output_level": int(quiet.value())}))
         isolate.toggled.connect(lambda on: (cfg.update({"isolate_output_while_dictating": on}),
                                             quiet.setEnabled(on)))
-        card.add(Row("Mute other apps' sound",
-                     "Other apps go quiet while I dictate and come back when I stop. "
-                     "Free Dictate's beeps still play.",
+        card.add(Row("Turn other apps down",
+                     "Other apps' sound drops while I dictate and comes back when I stop. "
+                     "FreeDictate's own beeps still play.",
                      isolate))
-        card.add(Row("What other apps do", "Only applies while the row above is on.", quiet))
+        card.add(Row("How far down", "Apps that are already quieter than this stay as they are.", quiet))
 
         card = page.section("Feedback")
         sounds = Toggle(cfg["sounds"])
@@ -502,8 +502,8 @@ class SettingsWindow(FluentWindow):
         timer.setEnabled(cfg["overlay"])
         card.add(Row("Recording bar", "A small bar on screen while it listens and transcribes.", bar))
         card.add(Row("Bar position", "", pos))
-        mat_row = Row("Bar material", "Uses the window's tint over a picture of what's behind the bar, "
-                      "taken as it appears.", mat)
+        mat_row = Row("Bar material", "The bar's background: the window's tint over a snapshot of what's "
+                      "behind the bar, taken when it appears.", mat)
         if not native.backdrop_supported():
             mat_row.set_note("Materials need Windows 11 22H2 or later. The bar stays solid.")
         elif not native.transparency_enabled():
@@ -606,8 +606,8 @@ class SettingsWindow(FluentWindow):
         verify_btn = button("Verify model files")
         verify_btn.clicked.connect(self._verify_clicked)
         self.verify_row = Row("Model files",
-                              "Downloads are recorded with sizes and checksums and checked when this "
-                              "page opens. This re-checks every byte of every file.", verify_btn)
+                              "File sizes are checked every time this page opens. Verify reads every byte "
+                              "to catch a damaged download.", verify_btn)
         card.add(self.verify_row)
 
         card = page.section("Graphics card", "An NVIDIA graphics card makes the large models many times faster.")
@@ -641,9 +641,9 @@ class SettingsWindow(FluentWindow):
         idle.toggled.connect(lambda on: (self.cfg.update({"idle_unload": on}), after.setEnabled(on)))
         after.currentIndexChanged.connect(lambda _: self.cfg.update({"idle_seconds": int(after.value())}))
         card.add(Row("Free graphics memory when idle",
-                     "Unloads the models so games get the memory back. Right after each take is the "
-                     "default: nothing sits in VRAM between takes, and the next take reloads while "
-                     "you're already talking. Pausing unloads immediately.",
+                     "Unloads the speech and writing models so games get the memory back. By default this "
+                     "happens right after each take, and the next take reloads them while you're already "
+                     "talking. Pausing unloads them at once.",
                      idle))
         self._idle_after_row = Row("Keep models loaded for", "", after)
         card.add(self._idle_after_row)
@@ -665,14 +665,13 @@ class SettingsWindow(FluentWindow):
         cap = Slider(1, cores, saved or min(6, cores), "", width=180)
         cap.changed.connect(lambda v: self.cfg.update({"cpu_threads": v}))
         cap_row = Row("Processor cores", f"This PC has {cores} cores and {threads} threads. "
-                      "Dictation waits longer for your words the lower this is.", cap)
+                      "The lower this is, the longer each take takes to turn into text.", cap)
         limit.toggled.connect(lambda on: (
             self.cfg.update({"cpu_threads": (self.cfg["cpu_threads"] or min(6, cores)) if on else 0}),
             Card.show_row(cap_row, on)))
         card.add(Row("Limit processor cores",
-                     "Caps how many processor cores dictation may use. The lower you set it, the longer "
-                     "a take takes, and the fewer CPU spikes and audio crackles. Six cores measured "
-                     "just as fast as every core, with the rest of the machine left alone.", limit))
+                     "Caps how many processor cores dictation uses, for fewer CPU spikes and audio "
+                     "crackles. Six cores measured as fast as all of them.", limit))
         card.add(cap_row)
         Card.show_row(cap_row, self.cfg["cpu_threads"] > 0)
         vad = Toggle(self.cfg["vad"])
@@ -1197,7 +1196,8 @@ class SettingsWindow(FluentWindow):
         card.add(self.keep_row)
         tb = Segmented([("custom", "FreeDictate"), ("windows", "Windows")], cfg["titlebar"])
         tb.changed.connect(lambda k: cfg.update({"titlebar": k}))
-        card.add(Row("Title bar", "Windows uses the standard title bar, buttons and menu.", tb))
+        card.add(Row("Title bar", "FreeDictate draws its own. Windows uses the standard title bar, buttons and "
+                     "menu.", tb))
         self._update_backdrop_note()
 
         card = page.section("Motion")

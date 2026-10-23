@@ -22,11 +22,13 @@ def _row_control(win, title: str, kind):
 
 
 def test_privacy_switches_write_the_config_and_the_menu_follows(qapp, env):
-    win = open_window(qapp, fresh_cfg(), env)
+    # Start from the defaults: an earlier run in the same scratch profile saved these on.
+    cfg = fresh_cfg(mic_privacy_while_dictating=False, isolate_output_while_dictating=False, isolate_output_level=0)
+    win = open_window(qapp, cfg, env)
     try:
         private = _row_control(win, "Keep my mic private", Toggle)
-        mute = _row_control(win, "Mute other apps' sound", Toggle)
-        menu = _row_control(win, "What other apps do", QComboBox)
+        mute = _row_control(win, "Turn other apps down", Toggle)
+        menu = _row_control(win, "How far down", QComboBox)
 
         assert win.cfg["mic_privacy_while_dictating"] is False
         private.setChecked(True)
@@ -37,11 +39,11 @@ def test_privacy_switches_write_the_config_and_the_menu_follows(qapp, env):
         mute.setChecked(True)
         assert win.cfg["isolate_output_while_dictating"] is True
         assert menu.isEnabled()
-        assert win.cfg["isolate_output_level"] == 0          # default: go silent
+        assert win.cfg["isolate_output_level"] == 0          # default: mute them
 
-        menu.setCurrentIndex(menu.findText("Drop to 25% volume"))
+        menu.setCurrentIndex(menu.findText("25% volume"))
         assert win.cfg["isolate_output_level"] == 25
-        menu.setCurrentIndex(menu.findText("Go silent"))
+        menu.setCurrentIndex(menu.findText("Mute them"))
         assert win.cfg["isolate_output_level"] == 0
 
         mute.setChecked(False)
@@ -58,7 +60,7 @@ def test_privacy_section_renders(qapp, env):
         return
     win = open_window(qapp, fresh_cfg(), env)
     try:
-        mute_label = next(lbl for lbl in win.findChildren(QLabel) if lbl.text() == "Mute other apps' sound")
+        mute_label = next(lbl for lbl in win.findChildren(QLabel) if lbl.text() == "Turn other apps down")
         node = mute_label.parentWidget()
         while node is not None and not isinstance(node, Card):
             node = node.parentWidget()
