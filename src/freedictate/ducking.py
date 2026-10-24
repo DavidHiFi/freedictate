@@ -19,13 +19,16 @@ changed, and removed only after a successful restore. If the app dies
 mid-take, the next start re-applies the restore from those files. A restore
 that fails while the app runs is retried on the worker every second.
 
-Mic privacy works at two levels. Each foreign capture session is muted, and
-so is every other recording device (the endpoint mute Windows itself uses).
-Session mute alone let a Discord call hear the user (2026-10-24); endpoint
-mute is honoured by every shared-mode reader and Discord watches it too.
-The device the take records from is never endpoint-muted, nor is a device an
-audio router (Voicemeeter, VB-Audio Matrix, ...) is reading, since that
-router may be what feeds our input.
+Mic privacy works at three levels. Each foreign capture session is muted.
+Every other recording device that an app is reading is then held open in
+exclusive mode, which cuts its readers off at the driver; a device that
+refuses the hold gets the endpoint mute Windows itself uses instead. Mutes
+alone are not enough: VB-Audio Matrix's VAIO devices ignore both the session
+and the endpoint mute, and a Discord call kept hearing the user through them
+(measured 2026-10-24). Readers reopen the device on their own once the hold
+ends; Discord takes about half a second. The device the take records from is
+never touched, nor is a device an audio router (Voicemeeter, VB-Audio
+Matrix, ...) is reading, since that router may be what feeds our input.
 
 Restore is keyed per session by its instance identifier: a process can own
 several sessions (Flow.Launcher held two) and can open a new one mid-take,
@@ -137,6 +140,9 @@ class _State:
         self.capture_muted: dict[str, tuple[int, float, bool, object]] = {}
         # endpoint id -> IAudioEndpointVolume we muted (it was unmuted before)
         self.endpoints_muted: dict[str, object] = {}
+        # endpoint id -> running exclusive IAudioClient; dropping it lets go
+        self.held: dict[str, object] = {}
+        self.hold_refused: set[str] = set()          # not retried until the next take
         self.own_endpoint: str | None = None
         self.endpoint_before: dict[str, bool] = {}   # device mute when the take began
         self.endpoint_layer = True
@@ -146,7 +152,7 @@ class _State:
     def busy(self) -> bool:
         """A take is running, or a restore still owes sessions."""
         return (self.active or self.capture_active or bool(self.ducked) or bool(self.capture_muted)
-                or bool(self.endpoints_muted))
+                or bool(self.endpoints_muted) or bool(self.held))
 
 
 # ------------------------------------------------------------------ helpers
@@ -253,7 +259,10 @@ def _enumerate_capture_endpoints():
     from pycaw.pycaw import IAudioEndpointVolume
 
     readers: dict[str, set[str]] = {}
+    mine = os.getpid()
     for key, pid, _volume, _muted, _control in _sessions(_CAPTURE, strict=False):
+        if pid in (0, mine):
+            continue           # Windows' own session, or our take and holds
         try:
             name = psutil.Process(pid).name().lower()
         except Exception:
@@ -272,6 +281,82 @@ def _enumerate_capture_endpoints():
             continue
         out.append((device_id, control, readers.get(device_id, set())))
     return out
+
+
+_AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED = -2004287463   # 0x88890019
+
+
+def _exclusive_formats(mix):
+    """Formats to try for an exclusive open: the device's own mix format, then
+    integer PCM at its rate and channel count and the common fallbacks, each
+    as an extensible header (VB-Audio's drivers refuse the plain one)."""
+    import ctypes
+    from ctypes.wintypes import DWORD, WORD
+    from comtypes import GUID
+    from pycaw.api.audioclient.depend import WAVEFORMATEX
+
+    # Packed like mmreg.h; pycaw's WAVEFORMATEX is padded to 20 bytes, which
+    # shifts every extensible field and gets each format refused.
+    class WAVEFORMATEXTENSIBLE(ctypes.Structure):
+        _pack_ = 1
+        _fields_ = [("wFormatTag", WORD), ("nChannels", WORD), ("nSamplesPerSec", DWORD),
+                    ("nAvgBytesPerSec", DWORD), ("nBlockAlign", WORD), ("wBitsPerSample", WORD),
+                    ("cbSize", WORD), ("wValidBitsPerSample", WORD),
+                    ("dwChannelMask", DWORD), ("SubFormat", GUID)]
+
+    pcm = GUID("{00000001-0000-0010-8000-00AA00389B71}")
+    yield mix
+    for rate in dict.fromkeys((mix.contents.nSamplesPerSec, 48000, 44100)):
+        for channels in dict.fromkeys((mix.contents.nChannels, 2, 1)):
+            for bits in (16, 24, 32):
+                block = channels * bits // 8
+                f = WAVEFORMATEXTENSIBLE(0xFFFE, channels, rate, rate * block, block, bits, 22,
+                                         bits, 0x3 if channels == 2 else 0x4, pcm)
+                yield ctypes.cast(ctypes.pointer(f), ctypes.POINTER(WAVEFORMATEX)), f
+
+
+def _hold_exclusive(device_id: str):
+    """Open one recording device in exclusive mode and start it. Windows then
+    cuts off every app reading it and refuses new readers until we let go;
+    Discord reopens its mic about half a second after (measured 2026-10-24).
+    Returns the running IAudioClient. Raises when no format is accepted or
+    the device doesn't allow exclusive use."""
+    import ctypes
+    import comtypes
+    from pycaw.pycaw import IAudioClient
+
+    device = _device_enumerator().GetDevice(device_id)
+
+    def client():
+        return device.Activate(IAudioClient._iid_, comtypes.CLSCTX_INPROC_SERVER, None) \
+            .QueryInterface(IAudioClient)
+
+    probe = client()
+    period, _minimum = probe.GetDevicePeriod()
+    # Only the text of a refusal is kept: a stored exception's traceback holds
+    # this frame, and with it the running client, so the device stayed held
+    # after release until the garbage collector ran (measured 2026-10-24).
+    last = ""
+    for fmt in _exclusive_formats(probe.GetMixFormat()):
+        pointer = fmt[0] if isinstance(fmt, tuple) else fmt   # the tuple keeps its struct alive
+        c = client()
+        try:
+            c.Initialize(1, 0, period, period, pointer, None)
+        except comtypes.COMError as e:
+            last = str(e)
+            if e.hresult != _AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED:
+                continue
+            frames = c.GetBufferSize()
+            aligned = round(10_000_000 * frames / pointer.contents.nSamplesPerSec)
+            c = client()
+            try:
+                c.Initialize(1, 0, aligned, aligned, pointer, None)
+            except comtypes.COMError as e2:
+                last = str(e2)
+                continue
+        c.Start()
+        return c
+    raise RuntimeError(f"no exclusive format accepted ({last})")
 
 
 def _apply_duck(v, level: int, original: float, volume: float, muted: bool) -> None:
@@ -398,10 +483,11 @@ def _mute_capture_sessions(state: _State) -> None:
 
 
 def _mute_capture_endpoints(state: _State) -> None:
-    """Mute every recording device except ours and those an audio router
-    reads. Best effort: session mute already covers each app, so a device that
-    refuses is logged, not fatal."""
-    if not state.own_endpoint or not state.endpoint_layer:
+    """Hold every other recording device an app is reading, except those an
+    audio router reads; mute the ones that refuse the hold. Best effort:
+    session mute already covers each app, so a device that refuses both is
+    logged, not fatal."""
+    if not state.own_endpoint:
         return
     devices = _enumerate_capture_endpoints()
     for device_id, control, _readers in devices:
@@ -410,10 +496,13 @@ def _mute_capture_endpoints(state: _State) -> None:
                 state.endpoint_before[device_id] = bool(control.GetMute())
             except Exception:
                 state.endpoint_before[device_id] = True    # unreadable: leave it alone
+    _hold_capture_endpoints(state, devices)
+    if not state.endpoint_layer:
+        return
     for device_id, control, readers in devices:
         if device_id == state.own_endpoint or state.endpoint_before[device_id]:
             continue               # ours, or muted by the user and not ours to restore
-        if any(r in name for name in readers for r in _ROUTERS):
+        if device_id in state.held or any(r in name for name in readers for r in _ROUTERS):
             continue
         try:
             if bool(control.GetMute()):
@@ -441,6 +530,31 @@ def _mute_capture_endpoints(state: _State) -> None:
             continue
     if changed:
         _write_mic_record(state)
+
+
+def _hold_capture_endpoints(state: _State, devices) -> None:
+    """Take an exclusive hold on each other device with a foreign reader. A
+    device nobody reads over WASAPI is left alone: Matrix reads the hardware
+    inputs over ASIO, and holding those could upset its clock (untested)."""
+    for device_id, _control, readers in devices:
+        if (device_id == state.own_endpoint or device_id in state.held or device_id in state.hold_refused
+                or not readers or any(r in name for name in readers for r in _ROUTERS)):
+            continue
+        try:
+            state.held[device_id] = _hold_exclusive(device_id)
+        except Exception as e:
+            state.hold_refused.add(device_id)
+            log.warning("Microphone privacy: could not hold recording device %s (%s); muting it instead",
+                        device_id, e)
+
+
+def _release_holds(state: _State) -> None:
+    for device_id, client in list(state.held.items()):
+        try:
+            client.Stop()
+        except Exception:
+            pass               # dropping the client releases the device either way
+        del state.held[device_id]
 
 
 def _capture_is_shared(state: _State) -> None:
@@ -473,6 +587,7 @@ def _restore_endpoints(state: _State) -> list[Exception]:
 def _restore_capture(state: _State) -> None:
     """Put every muted capture session back; a session whose app has exited
     counts as restored. Raises while anything live is still owed."""
+    _release_holds(state)
     failures: list[Exception] = _restore_endpoints(state)
     restored = 0
     for key, (pid, volume, muted, control) in list(state.capture_muted.items()):
@@ -502,6 +617,7 @@ def _start_capture_privacy(state: _State, own_endpoint: str | None = None) -> No
         return
     state.own_endpoint = own_endpoint
     state.endpoint_before = {}
+    state.hold_refused = set()
     state.endpoint_layer = True
     _capture_failure.clear()
     try:
@@ -515,13 +631,13 @@ def _start_capture_privacy(state: _State, own_endpoint: str | None = None) -> No
     state.capture_active = True
     state.retries = 0
     state.tick_at = time.monotonic() + _RESCAN_INTERVAL
-    log.info("Microphone privacy on: %d capture session(s) and %d other device(s) muted",
-             len(state.capture_muted), len(state.endpoints_muted))
+    log.info("Microphone privacy on: %d capture session(s) muted, %d other device(s) held, %d muted",
+             len(state.capture_muted), len(state.held), len(state.endpoints_muted))
 
 
 def _stop_capture_privacy(state: _State) -> None:
     state.capture_active = False
-    if not (state.capture_muted or state.endpoints_muted):
+    if not (state.capture_muted or state.endpoints_muted or state.held):
         return
     try:
         _restore_capture(state)

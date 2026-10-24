@@ -68,6 +68,14 @@ def no_capture_endpoints(monkeypatch):
     monkeypatch.setattr(ducking, "_enumerate_capture_endpoints", lambda: [])
 
 
+@pytest.fixture(autouse=True)
+def no_exclusive_hold(monkeypatch):
+    """No real device is ever opened: a hold fails unless a test grants it."""
+    def refuse(device_id):
+        raise RuntimeError("no hold in tests")
+    monkeypatch.setattr(ducking, "_hold_exclusive", refuse)
+
+
 def set_sessions(worker, sessions):
     """sessions: list of (pid, [FakeVolume, ...]) — a pid may own several.
     Each FakeVolume is one session; its identity is the session key, the way
@@ -534,3 +542,111 @@ def test_a_shared_take_keeps_its_own_device_unmuted(worker, monkeypatch):
     assert not vaio.muted
     ducking.stop_capture_privacy()
     assert not vaio.muted
+
+
+# ------------------------- 2026-10-24 exclusive hold (VB-Audio VAIO ignores mute)
+
+class FakeClient:
+    def __init__(self):
+        self.stopped = False
+
+    def Stop(self):
+        self.stopped = True
+
+
+def grant_holds(monkeypatch, refuse=()):
+    clients = {}
+
+    def hold(device_id):
+        if device_id in refuse:
+            raise RuntimeError("exclusive refused")
+        clients[device_id] = FakeClient()
+        return clients[device_id]
+    monkeypatch.setattr(ducking, "_hold_exclusive", hold)
+    return clients
+
+
+def test_privacy_holds_every_other_device_an_app_reads(worker, monkeypatch):
+    """Matrix's VAIO devices ignore every mute, so a device with readers is
+    held open exclusively instead, and released when the take ends."""
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    clients = grant_holds(monkeypatch)
+    ours, discord, idle = FakeVolume(1, False), FakeVolume(1, False), FakeVolume(1, False)
+    endpoints(monkeypatch, ("ours", ours, {"steam.exe"}), ("discord", discord, {"discord.exe"}),
+              ("idle", idle, set()))
+    ducking.start_capture_privacy("ours")
+    assert set(clients) == {"discord"}          # never ours, never a device nobody reads
+    assert not discord.muted                    # held, so not muted on top
+    assert worker.state.busy()
+    ducking.stop_capture_privacy()
+    assert clients["discord"].stopped
+    assert not worker.state.held and not worker.state.busy()
+    assert not idle.muted and not ducking.MIC_RECORD.exists()
+
+
+def test_a_device_that_refuses_the_hold_is_muted_instead(worker, monkeypatch):
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    clients = grant_holds(monkeypatch, refuse={"discord"})
+    discord = FakeVolume(1, False)
+    endpoints(monkeypatch, ("ours", FakeVolume(1, False), set()), ("discord", discord, {"discord.exe"}))
+    tries = []
+    refuse = ducking._hold_exclusive
+    monkeypatch.setattr(ducking, "_hold_exclusive", lambda d: (tries.append(d), refuse(d))[1])
+    ducking.start_capture_privacy("ours")
+    assert not clients and discord.muted
+    tick(worker)
+    assert tries == ["discord"]                 # a refusal is not retried every scan
+    ducking.stop_capture_privacy()
+    assert not discord.muted
+
+
+def test_privacy_never_holds_a_device_an_audio_router_reads(worker, monkeypatch):
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    clients = grant_holds(monkeypatch)
+    endpoints(monkeypatch, ("hw", FakeVolume(1, False), {"vbaudiomatrix.exe", "discord.exe"}))
+    ducking.start_capture_privacy("ours")
+    assert not clients
+    ducking.stop_capture_privacy()
+
+
+def test_a_device_that_gains_a_reader_mid_take_is_held(worker, monkeypatch):
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    clients = grant_holds(monkeypatch)
+    readers = set()
+    endpoints(monkeypatch, ("ours", FakeVolume(1, False), set()), ("game", FakeVolume(1, False), readers))
+    ducking.start_capture_privacy("ours")
+    assert not clients
+    readers.add("game.exe")
+    tick(worker)
+    assert set(clients) == {"game"}
+    tick(worker)
+    assert len(clients) == 1                    # held once, not reopened every scan
+    ducking.stop_capture_privacy()
+    assert clients["game"].stopped and not worker.state.held
+
+
+def test_holds_are_released_when_privacy_is_lost_mid_take(worker, monkeypatch):
+    clients = grant_holds(monkeypatch)
+    endpoints(monkeypatch, ("ours", FakeVolume(1, False), set()), ("discord", FakeVolume(1, False), {"discord.exe"}))
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    ducking.start_capture_privacy("ours")
+
+    def broken():
+        raise OSError("audio service went away")
+    monkeypatch.setattr(ducking, "_enumerate_capture", broken)   # the next re-scan fails
+    tick(worker)
+    assert ducking.capture_privacy_failed()
+    assert clients["discord"].stopped and not worker.state.held
+
+
+def test_holds_survive_a_shared_take(worker, monkeypatch):
+    """A shared take gives up device mute, not the holds on other devices."""
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    clients = grant_holds(monkeypatch)
+    endpoints(monkeypatch, ("ours", FakeVolume(1, False), set()), ("discord", FakeVolume(1, False), {"discord.exe"}))
+    ducking.start_capture_privacy("ours")
+    ducking.capture_is_shared()
+    tick(worker)
+    assert "discord" in worker.state.held and not clients["discord"].stopped
+    ducking.stop_capture_privacy()
+    assert clients["discord"].stopped
