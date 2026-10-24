@@ -59,6 +59,7 @@ def worker(monkeypatch, tmp_path):
     monkeypatch.setattr(ducking, "_get_worker", lambda: w)
     monkeypatch.setattr(ducking, "RECORD", tmp_path / "audio-restore.json")
     monkeypatch.setattr(ducking, "MIC_RECORD", tmp_path / "mic-privacy-restore.json")
+    monkeypatch.setattr(ducking, "OWED", tmp_path / "mic-privacy-owed.json")
     return w
 
 
@@ -74,6 +75,12 @@ def no_exclusive_hold(monkeypatch):
     def refuse(device_id):
         raise RuntimeError("no hold in tests")
     monkeypatch.setattr(ducking, "_hold_exclusive", refuse)
+
+
+@pytest.fixture(autouse=True)
+def app_names(monkeypatch):
+    """Each pid is its own app unless a test says otherwise."""
+    monkeypatch.setattr(ducking, "_app_of", lambda pid: f"app{pid}.exe")
 
 
 def set_sessions(worker, sessions):
@@ -109,6 +116,7 @@ def live_worker(monkeypatch, tmp_path):
     """The real worker thread, with fake sessions and a fast re-scan."""
     monkeypatch.setattr(ducking, "RECORD", tmp_path / "audio-restore.json")
     monkeypatch.setattr(ducking, "MIC_RECORD", tmp_path / "mic-privacy-restore.json")
+    monkeypatch.setattr(ducking, "OWED", tmp_path / "mic-privacy-owed.json")
     monkeypatch.setattr(ducking, "_RESCAN_INTERVAL", 0.05)
     w = ducking._Worker()
     monkeypatch.setattr(ducking, "_get_worker", lambda: w)
@@ -650,3 +658,66 @@ def test_holds_survive_a_shared_take(worker, monkeypatch):
     assert "discord" in worker.state.held and not clients["discord"].stopped
     ducking.stop_capture_privacy()
     assert clients["discord"].stopped
+
+
+# ------------------ 2026-10-24 3:20 PM: Discord's mic left muted after takes
+
+def test_an_app_that_restarts_while_muted_gets_its_mic_back(worker, monkeypatch):
+    """Windows carries a session mute over to the app's next launch, so an app
+    that closed mid-take came back muted and stayed that way."""
+    monkeypatch.setattr(ducking, "_app_of", lambda pid: "discord.exe")
+    old = FakeVolume(.6, False)
+    live = [("old", 123, old)]
+    monkeypatch.setattr(ducking, "_enumerate_capture",
+                        lambda: [(k, pid, v.volume, v.muted, v) for k, pid, v in live])
+    ducking.start_capture_privacy()
+    assert old.muted
+
+    def expired(*a, **k):
+        raise OSError("the session expired with its app")
+    old.SetMute = old.SetMasterVolume = expired
+    live.clear()
+    monkeypatch.setattr(ducking, "_pid_alive", lambda pid: pid != 123)
+    ducking.stop_capture_privacy()
+    relaunched = FakeVolume(.6, True)          # the mute Windows kept for the app
+    live.append(("new", 124, relaunched))
+    assert worker.state.busy()                 # the worker keeps checking for it
+    tick(worker)
+    assert not relaunched.muted
+    assert not ducking.OWED.exists() and not worker.state.busy()
+
+
+def test_a_mute_an_earlier_take_left_behind_is_not_taken_for_the_users(worker, monkeypatch):
+    """Each take put back the mute it found, so one stuck mute stuck for good."""
+    monkeypatch.setattr(ducking, "_app_of", lambda pid: "discord.exe")
+    ducking.OWED.write_text(json.dumps({"apps": ["discord.exe"], "endpoints": ["discord"]}))
+    worker.state = FakeState()                 # a fresh run reads the file
+    session, device = FakeVolume(.6, True), FakeVolume(1, True)
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [("s", 123, session.volume, session.muted, session)])
+    endpoints(monkeypatch, ("ours", FakeVolume(1, False), set()), ("discord", device, set()))
+    ducking.start_capture_privacy("ours")
+    ducking.stop_capture_privacy()
+    assert not session.muted and not device.muted
+    assert not ducking.OWED.exists()
+
+
+def test_the_users_own_mute_survives_the_cleanup(worker, monkeypatch):
+    session, device = FakeVolume(.6, True), FakeVolume(1, True)
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [("s", 123, session.volume, session.muted, session)])
+    endpoints(monkeypatch, ("ours", FakeVolume(1, False), set()), ("muted", device, set()))
+    ducking.start_capture_privacy("ours")
+    ducking.stop_capture_privacy()
+    tick(worker)
+    assert session.muted and device.muted
+
+
+def test_startup_clears_mutes_a_previous_run_owed(worker, monkeypatch):
+    monkeypatch.setattr(ducking, "_app_of", lambda pid: "discord.exe")
+    ducking.OWED.write_text(json.dumps({"apps": ["discord.exe"], "endpoints": ["discord"]}))
+    worker.state = FakeState()                 # a fresh run reads the file
+    session, device = FakeVolume(.6, True), FakeVolume(1, True)
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [("s", 123, session.volume, session.muted, session)])
+    endpoints(monkeypatch, ("discord", device, set()))
+    ducking.recover()
+    assert not session.muted and not device.muted
+    assert not ducking.OWED.exists()

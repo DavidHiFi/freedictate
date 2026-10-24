@@ -49,6 +49,12 @@ from .log import log
 
 RECORD = paths.DATA / "audio-restore.json"
 MIC_RECORD = paths.DATA / "mic-privacy-restore.json"
+# Apps and devices FreeDictate muted and has not yet seen unmuted again. A
+# mute on this list is never taken for the user's own: Windows keeps an app's
+# session mute for its next launch, and a mute read as "already there" at the
+# start of a take used to be put back after it, so one stuck mute stuck for good.
+OWED = paths.DATA / "mic-privacy-owed.json"
+_OWED_INTERVAL = 2.0      # pause between checks for an owed app that is not running
 _RESCAN_INTERVAL = 0.25   # pause between the end of one mid-take scan and the next
 _RETRY_INTERVAL = 1.0     # pause between retries of a restore that failed
 _MAX_RETRIES = 30         # then the record files wait for the next start
@@ -146,13 +152,14 @@ class _State:
         self.own_endpoint: str | None = None
         self.endpoint_before: dict[str, bool] = {}   # device mute when the take began
         self.endpoint_layer = True
+        self.owed_apps, self.owed_endpoints = _load_owed()
         self.tick_at = 0.0
         self.retries = 0
 
     def busy(self) -> bool:
         """A take is running, or a restore still owes sessions."""
         return (self.active or self.capture_active or bool(self.ducked) or bool(self.capture_muted)
-                or bool(self.endpoints_muted) or bool(self.held))
+                or bool(self.endpoints_muted) or bool(self.held) or bool(self.owed_apps))
 
 
 # ------------------------------------------------------------------ helpers
@@ -172,6 +179,76 @@ def _pid_alive(pid: int) -> bool:
         return psutil.pid_exists(pid)
     except Exception:
         return True
+
+
+def _app_of(pid: int) -> str | None:
+    try:
+        import psutil
+        return psutil.Process(pid).name().lower()
+    except Exception:
+        return None
+
+
+def _load_owed() -> tuple[set[str], set[str]]:
+    try:
+        rec = json.loads(OWED.read_text(encoding="utf-8"))
+        return set(rec.get("apps", [])), set(rec.get("endpoints", []))
+    except (OSError, ValueError, AttributeError):
+        return set(), set()
+
+
+def _save_owed(state: "_State") -> None:
+    try:
+        if not (state.owed_apps or state.owed_endpoints):
+            OWED.unlink(missing_ok=True)
+            return
+        paths.DATA.mkdir(parents=True, exist_ok=True)
+        tmp = OWED.with_suffix(f".json.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"apps": sorted(state.owed_apps),
+                                   "endpoints": sorted(state.owed_endpoints)}), encoding="utf-8")
+        os.replace(tmp, OWED)
+    except OSError:
+        log.warning("Could not write %s", OWED, exc_info=True)
+
+
+def _settle_owed(state: "_State") -> None:
+    """Unmute what FreeDictate muted and still finds muted: devices, and every
+    session of an owed app, including one that restarted with the mute Windows
+    kept for it. An app that isn't running stays owed until it comes back."""
+    if not (state.owed_apps or state.owed_endpoints):
+        return
+    before = (set(state.owed_apps), set(state.owed_endpoints))
+    present = set()
+    for device_id, control, _readers in _enumerate_capture_endpoints():
+        present.add(device_id)
+        if device_id in state.owed_endpoints:
+            try:
+                if bool(control.GetMute()):
+                    control.SetMute(False, None)
+                state.owed_endpoints.discard(device_id)
+            except Exception:
+                log.debug("Could not unmute owed device %s", device_id, exc_info=True)
+    state.owed_endpoints &= present     # an unplugged device owes nothing
+    if state.owed_apps:
+        seen = set()
+        try:
+            live = _enumerate_capture()
+        except Exception:
+            live = []                  # unreadable now: still owed, next check retries
+        for _key, pid, _volume, muted, control in live:
+            app = _app_of(pid) if pid != os.getpid() else None
+            if app not in state.owed_apps:
+                continue
+            try:
+                if muted:
+                    control.SetMute(False, None)
+                    log.info("Microphone privacy: unmuted %s, left muted after a take", app)
+                seen.add(app)
+            except Exception:
+                log.debug("Could not unmute owed app %s", app, exc_info=True)
+        state.owed_apps -= seen
+    if before != (state.owed_apps, state.owed_endpoints):
+        _save_owed(state)
 
 
 def _session_key(control, pid: int, ordinal: int) -> str:
@@ -468,7 +545,13 @@ def _mute_capture_sessions(state: _State) -> None:
     new = False
     for key, pid, volume, muted, control in live:
         if key not in state.capture_muted:
+            app = _app_of(pid)
+            if muted and app in state.owed_apps:
+                muted = False          # our own leftover, not the user's mute
             state.capture_muted[key] = (pid, volume, muted, control)
+            if not muted and app and app not in state.owed_apps:
+                state.owed_apps.add(app)
+                _save_owed(state)
             new = True
     if new:
         _write_mic_record(state)
@@ -493,7 +576,8 @@ def _mute_capture_endpoints(state: _State) -> None:
     for device_id, control, _readers in devices:
         if device_id not in state.endpoint_before:
             try:
-                state.endpoint_before[device_id] = bool(control.GetMute())
+                state.endpoint_before[device_id] = (bool(control.GetMute())
+                                                    and device_id not in state.owed_endpoints)
             except Exception:
                 state.endpoint_before[device_id] = True    # unreadable: leave it alone
     _hold_capture_endpoints(state, devices)
@@ -510,6 +594,7 @@ def _mute_capture_endpoints(state: _State) -> None:
             if device_id not in state.endpoints_muted:
                 state.endpoints_muted[device_id] = control
                 _write_mic_record(state)
+                _owe_endpoint(state, device_id)
             control.SetMute(True, None)
             if not bool(control.GetMute()):
                 raise RuntimeError("mute did not stick")
@@ -525,11 +610,18 @@ def _mute_capture_endpoints(state: _State) -> None:
         try:
             if bool(control.GetMute()):
                 state.endpoints_muted[device_id] = control
+                _owe_endpoint(state, device_id)
                 changed = True
         except Exception:
             continue
     if changed:
         _write_mic_record(state)
+
+
+def _owe_endpoint(state: _State, device_id: str) -> None:
+    if device_id not in state.owed_endpoints:
+        state.owed_endpoints.add(device_id)
+        _save_owed(state)
 
 
 def _hold_capture_endpoints(state: _State, devices) -> None:
@@ -610,6 +702,7 @@ def _restore_capture(state: _State) -> None:
         raise RuntimeError(f"could not restore {len(failures)} capture session(s)") from failures[0]
     MIC_RECORD.unlink(missing_ok=True)
     log.info("Microphone privacy off: %d capture session(s) restored", restored)
+    _settle_owed(state)
 
 
 def _start_capture_privacy(state: _State, own_endpoint: str | None = None) -> None:
@@ -667,6 +760,9 @@ def _tick(state: _State) -> None:
         state.tick_at = time.monotonic() + _RESCAN_INTERVAL
         return
     if not (state.ducked or state.capture_muted or state.endpoints_muted):
+        if state.owed_apps:
+            _settle_owed(state)
+            state.tick_at = time.monotonic() + _OWED_INTERVAL
         return
     # A restore at the end of a take failed: try again, then leave it to the
     # record files and the next start.
@@ -725,6 +821,7 @@ def recover() -> None:
 
     def run(state: _State) -> None:
         _recover_capture_privacy()
+        _settle_owed(state)
         if state.active or not RECORD.exists():
             return
         try:
