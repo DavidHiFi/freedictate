@@ -1,7 +1,6 @@
 """Dictation history in SQLite. Stays on this PC; the user can turn it off or clear it."""
 from __future__ import annotations
 
-import re
 import sqlite3
 import threading
 import time
@@ -133,24 +132,6 @@ class History:
         with open(target, "w", encoding="utf-8", newline="\n") as f:
             for e in rows:
                 f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(e.ts))} [{e.seconds:.1f}s] {e.text}\n")
-        return len(rows)
-
-    def import_legacy_log(self, path: Path) -> int:
-        """Import a v1/v2 transcripts.log ("YYYY-MM-DD HH:MM:SS [12.3s] text")."""
-        pat = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \[([\d.]+)s\] (.+)$")
-        rows = []
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                m = pat.match(line.rstrip("\n"))
-                if m:
-                    ts = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
-                    text = m.group(3).strip()
-                    rows.append((ts, float(m.group(2)), word_count(text), text, "", ""))
-        with self._lock:
-            self._db.execute("BEGIN")
-            self._db.executemany("INSERT INTO entries(ts, seconds, words, text, model, app) VALUES (?,?,?,?,?,?)", rows)
-            self._db.execute("COMMIT")
-        self._changed()
         return len(rows)
 
     def close(self) -> None:

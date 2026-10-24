@@ -469,6 +469,25 @@ class ParakeetModel:
         return iter([_Segment(" ".join(t.strip() for t in texts if t.strip()))]), None
 
 
+def check_tokenizer() -> str:
+    """Build a tokenizer the way faster-whisper does and read each special token.
+
+    tokenizers 1.0.0-rc.x dropped Tokenizer.token_to_id. The bundle then loads
+    and every take fails, so the self-test and the tests call this (2026-10-24).
+    """
+    from faster_whisper.tokenizer import Tokenizer as WhisperTokenizer
+    from tokenizers import Tokenizer as Tk
+    from tokenizers import models as tk_models
+    specials = ["<|startoftranscript|>", "<|endoftext|>", "<|transcribe|>", "<|translate|>",
+                "<|startoflm|>", "<|startofprev|>", "<|notimestamps|>"]
+    tk = Tk(tk_models.WordLevel({t: i for i, t in enumerate(specials)}, unk_token="<|endoftext|>"))
+    w = WhisperTokenizer(tk, multilingual=False)
+    ids = [w.sot, w.eot, w.transcribe, w.translate, w.sot_lm, w.sot_prev, w.no_timestamps]
+    if None in ids:
+        raise RuntimeError("the tokenizer lost a special token")
+    return f"{len(ids)} special tokens read"
+
+
 def load(name: str, device: str, compute_type: str, cpu_threads: int = 0):
     """Load a model and run a real decode, so a broken dependency fails here
     and not silently on every dictation."""
@@ -485,15 +504,21 @@ def load(name: str, device: str, compute_type: str, cpu_threads: int = 0):
     path = local_path(name)
     dev, ct = resolve_device(device, compute_type)
     log.info("Loading %s on %s (%s)", name, dev, ct)
-    try:
+
+    def build(dev: str, ct: str):
         m = WhisperModel(str(path) if path else name, device=dev, compute_type=ct,
                          cpu_threads=cpu_threads, download_root=cache_dir())
+        # Both paths decode. The CPU fallback used to skip this, so a broken
+        # tokenizer passed load and failed on the first take (2026-10-24).
         list(m.transcribe(np.zeros(16000, dtype=np.float32), beam_size=1, language="en")[0])
+        return m
+
+    try:
+        m = build(dev, ct)
     except Exception:
         if dev != "cuda":
             raise
         log.exception("GPU load failed; falling back to the CPU")
         dev, ct = "cpu", "int8"
-        m = WhisperModel(str(path) if path else name, device=dev, compute_type=ct,
-                         cpu_threads=cpu_threads, download_root=cache_dir())
+        m = build(dev, ct)
     return m, dev, ct

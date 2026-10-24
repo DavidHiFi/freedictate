@@ -1,6 +1,7 @@
 import sqlite3
 
 import numpy as np
+import pytest
 
 from freedictate import history, models, writer
 
@@ -194,6 +195,39 @@ def test_both_engines_load_through_models_load(monkeypatch, tmp_path):
     assert calls[-1] == ("parakeet", "parakeet-tdt-0.6b-v2") and (dev, ct) == ("cpu", "int8")   # Parakeet is CPU by design
     models.load("parakeet-tdt-0.6b-v3", "cuda", "auto")
     assert calls[-1] == ("parakeet", "parakeet-tdt-0.6b-v3")   # each entry names its own onnx-asr model
+
+
+def _whisper_that_fails_on(monkeypatch, tmp_path, failing_devices):
+    import faster_whisper
+    built = []
+
+    class FakeWhisper:
+        def __init__(self, path, device, **k):
+            built.append(device)
+            self.device = device
+
+        def transcribe(self, *a, **k):
+            if self.device in failing_devices:
+                raise AttributeError("'tokenizers.Tokenizer' object has no attribute 'token_to_id'")
+            return iter([]), None
+    monkeypatch.setattr(faster_whisper, "WhisperModel", FakeWhisper)
+    monkeypatch.setattr(models, "local_path", lambda name: tmp_path)
+    monkeypatch.setattr(models, "resolve_device", lambda d, c: ("cuda", "float16"))
+    return built
+
+
+def test_a_gpu_failure_falls_back_to_a_cpu_that_decodes(monkeypatch, tmp_path):
+    built = _whisper_that_fails_on(monkeypatch, tmp_path, failing_devices={"cuda"})
+    assert models.load("tiny.en", "cuda", "float16")[1:] == ("cpu", "int8")
+    assert built == ["cuda", "cpu"]
+
+
+def test_a_broken_decode_fails_at_load_not_on_the_first_take(monkeypatch, tmp_path):
+    """2026-10-24: the CPU fallback reported "Ready" with a tokenizer that had no
+    token_to_id, and every take then failed. A failing decode must stop the load."""
+    _whisper_that_fails_on(monkeypatch, tmp_path, failing_devices={"cuda", "cpu"})
+    with pytest.raises(AttributeError, match="token_to_id"):
+        models.load("tiny.en", "cuda", "float16")
 
 
 def test_graphics_card_is_asked_again_once_the_engine_is_downloaded(monkeypatch):

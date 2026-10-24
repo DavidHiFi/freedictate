@@ -93,6 +93,12 @@ def _self_test(target: str) -> int:
     step("ctranslate2", lambda: __import__("ctranslate2").__version__)
     step("tokenizers", lambda: __import__("tokenizers").__version__)
 
+    def whisper_tokens():
+        # Fails the build if the bundled tokenizers lacks a method faster-whisper calls.
+        from . import models
+        return models.check_tokenizer()
+    step("faster-whisper tokenizer", whisper_tokens)
+
     def vad():
         from faster_whisper.vad import get_speech_timestamps
         return f"{len(get_speech_timestamps(np.zeros(16000, dtype=np.float32)))} segments in silence"

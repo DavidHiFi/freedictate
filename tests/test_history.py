@@ -17,16 +17,3 @@ def test_add_search_stats_prune(tmp_path):
     h.clear()
     assert h.count() == 0
     h.close()
-
-
-def test_legacy_import_and_export(tmp_path):
-    log = tmp_path / "transcripts.log"
-    log.write_text("2026-10-01 09:00:00 [12.3s] First one.\nnoise line\n2026-10-02 10:30:00 [1.0s] Second.\n",
-                   encoding="utf-8")
-    h = History(tmp_path / "h.db")
-    assert h.import_legacy_log(log) == 2
-    assert [e.text for e in h.recent(5)] == ["Second.", "First one."]
-    out = tmp_path / "out.txt"
-    assert h.export_text(out) == 2
-    assert out.read_text(encoding="utf-8").splitlines()[0] == "2026-10-01 09:00:00 [12.3s] First one."
-    h.close()

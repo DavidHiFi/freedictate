@@ -87,8 +87,8 @@ $haveTk = & $Python -c "import tokenizers; print(tokenizers.__version__)"
 if ($LASTEXITCODE -ne 0) { throw "Build Python ($Python) cannot import tokenizers" }
 if ("$haveTk".Trim() -ne $wantTk) {
   throw "Build Python ($Python) has tokenizers $haveTk but requirements.txt pins $wantTk. " +
-        "Build with packages\FreeDictate-Repo\.venv-build (scripts\build.ps1), never the system " +
-        "Python: tokenizers 1.0.0-rc.x removed Tokenizer.token_to_id, which faster-whisper 1.2.1 needs."
+        "Build with a .venv-build made from requirements.txt (-Python .venv-build\Scripts\python.exe), " +
+        "never the system Python: tokenizers 1.0.0-rc.x removed Tokenizer.token_to_id, which faster-whisper 1.2.1 needs."
 }
 Write-Host "tokenizers $haveTk == pinned $wantTk"
 
