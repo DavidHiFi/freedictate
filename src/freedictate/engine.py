@@ -493,6 +493,7 @@ class Engine:
                 # is safe here: every other app's mic session is already muted.
                 log.warning("Exclusive capture failed; falling back to shared", exc_info=True)
                 self.recorder.start(self.cfg["input_device"])
+                ducking.capture_is_shared()
         except Exception as e:
             log.exception("Microphone failed to open")
             if private:

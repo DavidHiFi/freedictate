@@ -487,3 +487,50 @@ def test_session_mute_is_reasserted_when_an_app_unmutes_itself(worker, monkeypat
     assert s.muted
     ducking.stop_capture_privacy()
     assert not s.muted
+
+
+class LinkedMute:
+    """Devices that share one mute switch, like VB-Audio's VAIO devices."""
+
+    def __init__(self):
+        self.muted = False
+
+    def device(self):
+        group = self
+
+        class Device(FakeVolume):
+            def GetMute(self):
+                return group.muted
+
+            def SetMute(self, m, ctx=None):
+                group.muted = bool(m)
+        return Device()
+
+
+def test_devices_sharing_a_mute_switch_are_all_put_back(worker, monkeypatch):
+    """Muting VAIO 2 muted VAIO 1 too (measured 2026-10-24 8:12 AM)."""
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    vaio = LinkedMute()
+    ours, discord, visualizer = vaio.device(), vaio.device(), vaio.device()
+    endpoints(monkeypatch, ("visualizer", visualizer, set()), ("ours", ours, set()),
+              ("discord", discord, {"discord.exe"}))
+    ducking.start_capture_privacy("ours")
+    assert vaio.muted
+    assert set(json.loads(ducking.MIC_RECORD.read_text())["endpoints"]) == {"visualizer", "ours", "discord"}
+    tick(worker)
+    ducking.stop_capture_privacy()
+    assert not vaio.muted
+    assert not ducking.MIC_RECORD.exists()
+
+
+def test_a_shared_take_keeps_its_own_device_unmuted(worker, monkeypatch):
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    vaio = LinkedMute()
+    endpoints(monkeypatch, ("ours", vaio.device(), set()), ("discord", vaio.device(), set()))
+    ducking.start_capture_privacy("ours")
+    ducking.capture_is_shared()
+    assert not vaio.muted
+    tick(worker)                       # the re-scan must not mute it again
+    assert not vaio.muted
+    ducking.stop_capture_privacy()
+    assert not vaio.muted

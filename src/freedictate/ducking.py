@@ -138,6 +138,8 @@ class _State:
         # endpoint id -> IAudioEndpointVolume we muted (it was unmuted before)
         self.endpoints_muted: dict[str, object] = {}
         self.own_endpoint: str | None = None
+        self.endpoint_before: dict[str, bool] = {}   # device mute when the take began
+        self.endpoint_layer = True
         self.tick_at = 0.0
         self.retries = 0
 
@@ -399,23 +401,59 @@ def _mute_capture_endpoints(state: _State) -> None:
     """Mute every recording device except ours and those an audio router
     reads. Best effort: session mute already covers each app, so a device that
     refuses is logged, not fatal."""
-    if not state.own_endpoint:
+    if not state.own_endpoint or not state.endpoint_layer:
         return
-    for device_id, control, readers in _enumerate_capture_endpoints():
-        if device_id == state.own_endpoint or device_id in state.endpoints_muted:
-            continue
+    devices = _enumerate_capture_endpoints()
+    for device_id, control, _readers in devices:
+        if device_id not in state.endpoint_before:
+            try:
+                state.endpoint_before[device_id] = bool(control.GetMute())
+            except Exception:
+                state.endpoint_before[device_id] = True    # unreadable: leave it alone
+    for device_id, control, readers in devices:
+        if device_id == state.own_endpoint or state.endpoint_before[device_id]:
+            continue               # ours, or muted by the user and not ours to restore
         if any(r in name for name in readers for r in _ROUTERS):
             continue
         try:
             if bool(control.GetMute()):
-                continue           # muted by the user; not ours to restore
-            state.endpoints_muted[device_id] = control
-            _write_mic_record(state)
+                continue
+            if device_id not in state.endpoints_muted:
+                state.endpoints_muted[device_id] = control
+                _write_mic_record(state)
             control.SetMute(True, None)
             if not bool(control.GetMute()):
                 raise RuntimeError("mute did not stick")
         except Exception as e:
             log.warning("Microphone privacy: could not mute recording device %s (%s)", device_id, e)
+    # Some drivers give several devices one mute switch (VB-Audio's VAIO
+    # devices do), so muting one mutes its siblings, ours included. Record
+    # every device that went quiet so the restore puts each one back.
+    changed = False
+    for device_id, control, _readers in devices:
+        if device_id in state.endpoints_muted or state.endpoint_before[device_id]:
+            continue
+        try:
+            if bool(control.GetMute()):
+                state.endpoints_muted[device_id] = control
+                changed = True
+        except Exception:
+            continue
+    if changed:
+        _write_mic_record(state)
+
+
+def _capture_is_shared(state: _State) -> None:
+    """Our take records in shared mode, where our own device's mute silences
+    it. If muting another device muted ours too, give up device mute for this
+    take; each app's session stays muted."""
+    if state.own_endpoint not in state.endpoints_muted:
+        return
+    state.endpoint_layer = False
+    failures = _restore_endpoints(state)
+    log.warning("Microphone privacy: your recording device shares its mute with another device; "
+                "only app mutes are used for this take%s", " (restore failed)" if failures else "")
+    _write_mic_record(state)
 
 
 def _restore_endpoints(state: _State) -> list[Exception]:
@@ -463,6 +501,8 @@ def _start_capture_privacy(state: _State, own_endpoint: str | None = None) -> No
     if state.capture_active:
         return
     state.own_endpoint = own_endpoint
+    state.endpoint_before = {}
+    state.endpoint_layer = True
     _capture_failure.clear()
     try:
         _mute_capture_sessions(state)
@@ -661,6 +701,13 @@ def start_capture_privacy(own_endpoint: str | None = None) -> None:
     ok, err = _get_worker().call(lambda state: _start_capture_privacy(state, own_endpoint))
     if not ok:
         raise RuntimeError(f"microphone privacy could not be enforced: {err}") from err
+
+
+def capture_is_shared() -> None:
+    """The take fell back to shared capture: keep our own device unmuted."""
+    ok, err = _get_worker().call(_capture_is_shared)
+    if not ok:
+        log.warning("Microphone privacy: could not unmute our own device: %s", err)
 
 
 def capture_privacy_failed() -> bool:
