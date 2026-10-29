@@ -193,7 +193,8 @@ class App(QObject):
         elif kind == "notice":
             self.notify(data.get("title", APP_NAME), data.get("text", ""))
         elif kind == "nothing":
-            self.overlay.flash("Didn't hear anything" if data.get("reason") == "silence" else "Didn't catch that")
+            self.overlay.flash("Didn't hear anything. Is your mic muted?" if data.get("reason") == "silence"
+                               else "Didn't catch that")
         elif kind == "result":
             if data.get("outcome") == "copied":
                 self.overlay.flash("Copied to clipboard")

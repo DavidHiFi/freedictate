@@ -270,17 +270,17 @@ def test_capture_privacy_mutes_other_capture_sessions_and_restores(worker, monke
     assert (already_muted.volume, already_muted.muted) == (.5, True)
 
 
-def test_capture_privacy_fails_closed_if_any_foreign_session_cannot_mute(worker, monkeypatch):
+def test_a_foreign_session_that_cannot_mute_does_not_block_the_others(worker, monkeypatch):
     good, bad = FakeVolume(.7, False), FakeVolume(.4, False)
-    def fail_mute(muted, ctx=None):
-        raise RuntimeError("access denied")
-    bad.SetMute = fail_mute
+    bad.SetMute = refuse_mute
     monkeypatch.setattr(ducking, "_enumerate_capture",
                         lambda: [("good", 123, .7, False, good), ("bad", 456, .4, False, bad)])
     ok, err = worker.call(lambda state: ducking._start_capture_privacy(state))
-    assert not ok and isinstance(err, RuntimeError)
-    assert not good.muted
-    assert not worker.state.capture_active
+    assert ok, err
+    assert good.muted and not bad.muted
+    assert worker.state.capture_active
+    ducking.stop_capture_privacy()
+    assert (good.volume, good.muted) == (.7, False)
 
 
 def test_capture_privacy_rescan_mutes_new_sessions_and_restores_them(worker, monkeypatch):
@@ -298,22 +298,21 @@ def test_capture_privacy_rescan_mutes_new_sessions_and_restores_them(worker, mon
     assert not ducking.MIC_RECORD.exists()
 
 
-def test_failed_capture_privacy_rescan_sets_nonblocking_failure(worker, monkeypatch):
+def refuse_mute(muted, ctx=None):
+    raise RuntimeError("session refused mute")
+
+
+def test_a_session_that_refuses_mute_mid_take_leaves_the_others_muted(worker, monkeypatch):
     first = FakeVolume(.7, False)
     current = [("first", 123, .7, False, first)]
     monkeypatch.setattr(ducking, "_enumerate_capture", lambda: current)
     ducking.start_capture_privacy()
     late = FakeVolume(.4, False)
-    original_set_mute = late.SetMute
-    def reject_mute(muted, ctx=None):
-        if muted:
-            raise RuntimeError("session refused mute")
-        original_set_mute(muted, ctx)
-    late.SetMute = reject_mute
+    late.SetMute = refuse_mute
     current.append(("late", 456, .4, False, late))
     tick(worker)
-    assert ducking.capture_privacy_failed()
-    assert not first.muted and not late.muted
+    assert first.muted and not late.muted
+    assert worker.state.capture_active
     ducking.stop_capture_privacy()
 
 
@@ -643,7 +642,6 @@ def test_holds_are_released_when_privacy_is_lost_mid_take(worker, monkeypatch):
         raise OSError("audio service went away")
     monkeypatch.setattr(ducking, "_enumerate_capture", broken)   # the next re-scan fails
     tick(worker)
-    assert ducking.capture_privacy_failed()
     assert clients["discord"].stopped and not worker.state.held
 
 

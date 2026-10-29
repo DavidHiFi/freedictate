@@ -33,17 +33,19 @@ def test_other_mics_go_quiet_before_ours_opens(started):
     assert order == ["mute other mics", "open our mic", "quiet other apps"]
 
 
-def test_mic_never_opens_when_privacy_cannot_be_turned_on(started, monkeypatch):
+def test_a_take_still_records_when_privacy_cannot_be_turned_on(started, monkeypatch, caplog):
+    """Privacy is best effort. A refusal must not stop the take: the user asked
+    to dictate, and a friend's PC lost every take to this before 3.7.4."""
     eng, order = started
 
     def refuse(own=None):
         order.append("mute other mics")
-        raise RuntimeError("a capture session refused mute")
+        raise RuntimeError("the audio service went away")
     monkeypatch.setattr(ducking, "start_capture_privacy", refuse)
-    assert not eng._begin()
-    assert "open our mic" not in order and "quiet other apps" not in order
-    assert order[-1] == "unmute other mics"
-    assert any(kind == "error" for kind, _ in eng.events)
+    assert eng._begin()
+    assert order == ["mute other mics", "unmute other mics", "open our mic", "quiet other apps"]
+    assert "could not be turned on" in caplog.text
+    assert not any(kind == "error" for kind, _ in eng.events)
 
 
 def test_writing_model_warms_up_while_you_talk(tmp_path, monkeypatch):

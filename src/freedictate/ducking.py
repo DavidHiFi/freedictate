@@ -68,7 +68,6 @@ _ROUTERS = ("voicemeeter", "vbaudiomatrix", "vbcable", "nvidia broadcast", "sona
 
 _worker: _Worker | None = None
 _worker_lock = threading.Lock()
-_capture_failure = threading.Event()
 _local = threading.local()
 
 
@@ -149,6 +148,7 @@ class _State:
         # endpoint id -> running exclusive IAudioClient; dropping it lets go
         self.held: dict[str, object] = {}
         self.hold_refused: set[str] = set()          # not retried until the next take
+        self.mute_refused: set[str] = set()          # session keys that refused mute this take
         self.own_endpoint: str | None = None
         self.endpoint_before: dict[str, bool] = {}   # device mute when the take began
         self.endpoint_layer = True
@@ -276,13 +276,14 @@ def _device_enumerator():
     return e
 
 
-def _sessions(flow: int, strict: bool):
+def _sessions(flow: int):
     """[(key, pid, volume, muted, ISimpleAudioVolume)] for every session on
     every active endpoint of one direction. Reads only ids, pids and volumes:
     pycaw's device list also reads every property of every device, which made
     one scan about ten times slower (measured: 120-185 ms against 10-14 ms).
-    With ``strict`` an unreadable endpoint or session raises instead of being
-    skipped. Runs on the worker thread."""
+    An endpoint or session that can't be read is skipped and logged: a device
+    that refuses is still muted or held by its own layer, and a session that
+    ends mid-scan is simply gone. Runs on the worker thread."""
     import comtypes
     from pycaw.pycaw import IAudioSessionControl2, IAudioSessionManager2, ISimpleAudioVolume
 
@@ -295,8 +296,6 @@ def _sessions(flow: int, strict: bool):
             sessions = device.Activate(IAudioSessionManager2._iid_, comtypes.CLSCTX_INPROC_SERVER, None) \
                 .QueryInterface(IAudioSessionManager2).GetSessionEnumerator()
         except Exception:
-            if strict:
-                raise
             log.debug("No session manager on audio endpoint %s; skipping", i, exc_info=True)
             continue
         per_pid: dict[int, int] = {}
@@ -309,8 +308,6 @@ def _sessions(flow: int, strict: bool):
                 out.append((f"{device_id}|{_session_key(control, pid, n)}", pid,
                             float(volume.GetMasterVolume()), bool(volume.GetMute()), volume))
             except Exception:
-                if strict:
-                    raise
                 log.debug("Session %s unreadable on %s; skipping", index, device_id, exc_info=True)
     return out
 
@@ -319,13 +316,12 @@ def _enumerate():
     """Every session on every playback device. GetAllSessions() only sees the
     default device, which misses audio playing through headsets and virtual
     cables."""
-    return _sessions(_RENDER, strict=False)
+    return _sessions(_RENDER)
 
 
 def _enumerate_capture():
-    """Every app session on every recording device. Any read failure is fatal:
-    privacy must not claim success partially."""
-    return [s for s in _sessions(_CAPTURE, strict=True) if s[1] > 0]
+    """Every app session on every recording device that can be read."""
+    return [s for s in _sessions(_CAPTURE) if s[1] > 0]
 
 
 def _enumerate_capture_endpoints():
@@ -337,7 +333,7 @@ def _enumerate_capture_endpoints():
 
     readers: dict[str, set[str]] = {}
     mine = os.getpid()
-    for key, pid, _volume, _muted, _control in _sessions(_CAPTURE, strict=False):
+    for key, pid, _volume, _muted, _control in _sessions(_CAPTURE):
         if pid in (0, mine):
             continue           # Windows' own session, or our take and holds
         try:
@@ -556,12 +552,18 @@ def _mute_capture_sessions(state: _State) -> None:
     if new:
         _write_mic_record(state)
     for key, pid, _volume, muted, control in live:
-        if not muted:
+        if not muted and key not in state.mute_refused:
             if state.capture_active and not state.capture_muted[key][2]:
                 log.info("Microphone privacy: app %d unmuted its mic mid-take; muting it again", pid)
-            control.SetMute(True, None)
-            if not bool(control.GetMute()):
-                raise RuntimeError(f"capture session {pid} did not accept mute")
+            try:
+                control.SetMute(True, None)
+                took = bool(control.GetMute())
+            except Exception:
+                took = False
+            if not took:
+                # One app that refuses must not leave every other app audible.
+                state.mute_refused.add(key)
+                log.warning("Microphone privacy: app %d did not accept mute; its mic stays open", pid)
     _mute_capture_endpoints(state)
 
 
@@ -711,15 +713,12 @@ def _start_capture_privacy(state: _State, own_endpoint: str | None = None) -> No
     state.own_endpoint = own_endpoint
     state.endpoint_before = {}
     state.hold_refused = set()
+    state.mute_refused = set()
     state.endpoint_layer = True
-    _capture_failure.clear()
     try:
         _mute_capture_sessions(state)
     except Exception:
-        try:
-            _restore_capture(state)
-        finally:
-            _capture_failure.set()
+        _restore_capture(state)
         raise
     state.capture_active = True
     state.retries = 0
@@ -748,7 +747,6 @@ def _tick(state: _State) -> None:
             _mute_capture_sessions(state)
         except Exception:
             log.exception("Microphone privacy was lost during a take; restoring sessions")
-            _capture_failure.set()
             state.capture_active = False
             try:
                 _restore_capture(state)
@@ -909,8 +907,7 @@ def _recover_capture_privacy() -> None:
 def start_capture_privacy(own_endpoint: str | None = None) -> None:
     """Mute every other app's microphone session, and every recording device
     except ``own_endpoint`` (the one the take reads), and check it took.
-    Raises when a session can't be muted, so the take never opens an
-    unprotected mic."""
+    Raises when privacy can't be turned on; the caller still records."""
     ok, err = _get_worker().call(lambda state: _start_capture_privacy(state, own_endpoint))
     if not ok:
         raise RuntimeError(f"microphone privacy could not be enforced: {err}") from err
@@ -921,11 +918,6 @@ def capture_is_shared() -> None:
     ok, err = _get_worker().call(_capture_is_shared)
     if not ok:
         log.warning("Microphone privacy: could not unmute our own device: %s", err)
-
-
-def capture_privacy_failed() -> bool:
-    """Non-blocking signal for the hotkey loop to end an unprotected take."""
-    return _capture_failure.is_set()
 
 
 def stop_capture_privacy() -> None:
