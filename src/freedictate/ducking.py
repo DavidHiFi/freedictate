@@ -23,12 +23,19 @@ Mic privacy works at three levels. Each foreign capture session is muted.
 Every other recording device that an app is reading is then held open in
 exclusive mode, which cuts its readers off at the driver; a device that
 refuses the hold gets the endpoint mute Windows itself uses instead. Mutes
-alone are not enough: VB-Audio Matrix's VAIO devices ignore both the session
-and the endpoint mute, and a Discord call kept hearing the user through them
-(measured 2026-10-24). Readers reopen the device on their own once the hold
-ends; Discord takes about half a second. The device the take records from is
-never touched, nor is a device an audio router (Voicemeeter, VB-Audio
-Matrix, ...) is reading, since that router may be what feeds our input.
+alone are not enough: VB-Audio Matrix's VAIO devices ignore the endpoint
+mute, and once Discord reads one, the session mute of other streams on it
+stops being applied too (measured 2026-10-24 and 2026-10-31). The device the
+take records from is never touched, nor is a device an audio router
+(Voicemeeter, VB-Audio Matrix, ...) is reading, since that router may be
+what feeds our input; router sessions are never muted.
+
+At the end of a take sessions and devices are unmuted first and the holds
+let go last. A held app reopens its mic on its own timer (Discord took
+0.2 to 1.3 s, measured 2026-10-31), and the reopened session can come up
+muted, so for a few seconds after each take any muted session of an app
+the take muted is unmuted again ("aftercare"). A scan that fails mid-take
+keeps every mute and hold in place until the take ends.
 
 Restore is keyed per session by its instance identifier: a process can own
 several sessions (Flow.Launcher held two) and can open a new one mid-take,
@@ -57,6 +64,10 @@ OWED = paths.DATA / "mic-privacy-owed.json"
 _OWED_INTERVAL = 2.0      # pause between checks for an owed app that is not running
 _RESCAN_INTERVAL = 0.25   # pause between the end of one mid-take scan and the next
 _RETRY_INTERVAL = 1.0     # pause between retries of a restore that failed
+# After a take, apps that were muted are watched this long: one that reopens
+# its mic (Discord does after a hold) can get a new session, and Windows can
+# hand it the mute FreeDictate set. Any such session is unmuted at once.
+_AFTERCARE = 8.0
 _MAX_RETRIES = 30         # then the record files wait for the next start
 _MIDTAKE_REV = 3          # record format: sessions carry their key
 _DEVICE_STATE_ACTIVE = 1
@@ -153,13 +164,17 @@ class _State:
         self.endpoint_before: dict[str, bool] = {}   # device mute when the take began
         self.endpoint_layer = True
         self.owed_apps, self.owed_endpoints = _load_owed()
+        self.aftercare_apps: set[str] = set()       # apps this take muted, watched after it
+        self.aftercare_skip: set[str] = set()       # session keys the user had muted themselves
+        self.aftercare_until = 0.0
         self.tick_at = 0.0
         self.retries = 0
 
     def busy(self) -> bool:
         """A take is running, or a restore still owes sessions."""
         return (self.active or self.capture_active or bool(self.ducked) or bool(self.capture_muted)
-                or bool(self.endpoints_muted) or bool(self.held) or bool(self.owed_apps))
+                or bool(self.endpoints_muted) or bool(self.held) or bool(self.owed_apps)
+                or self.aftercare_until > time.monotonic())
 
 
 # ------------------------------------------------------------------ helpers
@@ -529,15 +544,24 @@ def _write_mic_record(state: _State) -> None:
         tmp.write_text(json.dumps(record, indent=1), encoding="utf-8")
         os.replace(tmp, MIC_RECORD)
     except OSError:
+        # Privacy still runs; only crash recovery loses this take's record.
         log.exception("Could not write the microphone privacy restore record to %s", MIC_RECORD)
-        raise
+
+
+def _is_router(pid: int) -> bool:
+    """An audio router (Voicemeeter, Sonar, ...) reads a mic to feed a virtual
+    one, which may be the very input this take records. Its session is never
+    muted; the app reading the router's output is silenced instead."""
+    app = _app_of(pid) or ""
+    return any(r in app for r in _ROUTERS)
 
 
 def _mute_capture_sessions(state: _State) -> None:
     """Record capture sessions that are new to this take, then mute every
-    foreign one and check it took. Raises if any session refuses."""
+    foreign one and check it took. A session that refuses is logged and the
+    rest stay muted."""
     mine = os.getpid()
-    live = [s for s in _enumerate_capture() if s[1] != mine]
+    live = [s for s in _enumerate_capture() if s[1] != mine and not _is_router(s[1])]
     new = False
     for key, pid, volume, muted, control in live:
         if key not in state.capture_muted:
@@ -680,11 +704,19 @@ def _restore_endpoints(state: _State) -> list[Exception]:
 
 def _restore_capture(state: _State) -> None:
     """Put every muted capture session back; a session whose app has exited
-    counts as restored. Raises while anything live is still owed."""
-    _release_holds(state)
-    failures: list[Exception] = _restore_endpoints(state)
+    counts as restored. Raises while anything live is still owed.
+
+    Sessions and devices are unmuted before the holds are let go, so an app
+    that reopens its mic the moment it can finds it unmuted."""
+    failures: list[Exception] = []
     restored = 0
     for key, (pid, volume, muted, control) in list(state.capture_muted.items()):
+        if muted:
+            state.aftercare_skip.add(key)
+        else:
+            app = _app_of(pid)
+            if app:
+                state.aftercare_apps.add(app)
         try:
             control.SetMasterVolume(volume, None)
             control.SetMute(muted, None)
@@ -696,6 +728,9 @@ def _restore_capture(state: _State) -> None:
                 continue
         del state.capture_muted[key]
         restored += 1
+    failures += _restore_endpoints(state)
+    _release_holds(state)
+    state.aftercare_until = time.monotonic() + _AFTERCARE
     if failures:
         try:
             _write_mic_record(state)
@@ -707,6 +742,27 @@ def _restore_capture(state: _State) -> None:
     _settle_owed(state)
 
 
+def _aftercare(state: _State) -> None:
+    """For a few seconds after a take, unmute any session of an app this take
+    muted that shows up muted again: a mic reopened after a hold can inherit
+    the mute Windows kept for the app. Mutes the user set stay."""
+    if time.monotonic() >= state.aftercare_until:
+        state.aftercare_apps.clear()
+        state.aftercare_skip.clear()
+        return
+    for key, pid, _volume, muted, control in _enumerate_capture():
+        if not muted or key in state.aftercare_skip or pid == os.getpid():
+            continue
+        app = _app_of(pid)
+        if app not in state.aftercare_apps:
+            continue
+        try:
+            control.SetMute(False, None)
+            log.info("Microphone privacy: %s reopened its mic muted after the take; unmuted it", app)
+        except Exception:
+            log.debug("Could not unmute %s after the take", app, exc_info=True)
+
+
 def _start_capture_privacy(state: _State, own_endpoint: str | None = None) -> None:
     if state.capture_active:
         return
@@ -715,11 +771,14 @@ def _start_capture_privacy(state: _State, own_endpoint: str | None = None) -> No
     state.hold_refused = set()
     state.mute_refused = set()
     state.endpoint_layer = True
+    state.aftercare_until = 0.0
+    state.aftercare_apps.clear()
+    state.aftercare_skip.clear()
     try:
         _mute_capture_sessions(state)
     except Exception:
-        _restore_capture(state)
-        raise
+        # Whatever was muted stays muted; the re-scan keeps trying the rest.
+        log.exception("Microphone privacy: the first scan failed; retrying while the take runs")
     state.capture_active = True
     state.retries = 0
     state.tick_at = time.monotonic() + _RESCAN_INTERVAL
@@ -746,20 +805,27 @@ def _tick(state: _State) -> None:
         try:
             _mute_capture_sessions(state)
         except Exception:
-            log.exception("Microphone privacy was lost during a take; restoring sessions")
-            state.capture_active = False
-            try:
-                _restore_capture(state)
-            except Exception:
-                pass
+            # Keep every mute and hold in place: one failed scan is no reason
+            # to let every app hear the rest of the take.
+            log.warning("Microphone privacy: a re-scan failed; keeping the current mutes", exc_info=True)
     if state.active:
         _duck_sessions(state)
     if state.active or state.capture_active:
         state.tick_at = time.monotonic() + _RESCAN_INTERVAL
         return
     if not (state.ducked or state.capture_muted or state.endpoints_muted):
+        if state.aftercare_until:
+            try:
+                _aftercare(state)
+            except Exception:
+                log.debug("Aftercare scan failed", exc_info=True)
         if state.owed_apps:
             _settle_owed(state)
+        if state.aftercare_until > time.monotonic():
+            state.tick_at = time.monotonic() + _RESCAN_INTERVAL
+            return
+        state.aftercare_until = 0.0
+        if state.owed_apps:
             state.tick_at = time.monotonic() + _OWED_INTERVAL
         return
     # A restore at the end of a take failed: try again, then leave it to the

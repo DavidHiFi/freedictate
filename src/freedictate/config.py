@@ -37,7 +37,7 @@ DEFAULTS: dict[str, Any] = {
     "ai_tidy": False,               # rewrite each take with a writing model (writer.py)
     "ai_model": "standard",         # light | standard (writer.CATALOG)
     # privacy while dictating (both apply on the next take)
-    "mic_privacy_while_dictating": False,   # WASAPI exclusive capture: other apps lose the mic until the take ends
+    "mic_privacy_while_dictating": False,   # other apps' mics are muted or held until the take ends
     "isolate_output_while_dictating": False,  # duck or mute every other app's audio until the take ends
     "isolate_output_level": 0,      # 0 mutes other apps; 25 or 50 turns their sound down to that percent
     # overlay

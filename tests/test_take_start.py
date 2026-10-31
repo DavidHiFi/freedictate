@@ -48,6 +48,25 @@ def test_a_take_still_records_when_privacy_cannot_be_turned_on(started, monkeypa
     assert not any(kind == "error" for kind, _ in eng.events)
 
 
+def test_a_shared_fallback_says_once_that_privacy_is_partial(started, monkeypatch):
+    """A friend's call kept hearing him: when our mic can't be taken over, an
+    app on the same mic is protected by its app mute alone."""
+    eng, order = started
+    shared = []
+    monkeypatch.setattr(ducking, "capture_is_shared", lambda: shared.append(1))
+
+    def recorder_start(device, exclusive=False):
+        if exclusive:
+            raise RuntimeError("device in use")
+        order.append("open our mic shared")
+    monkeypatch.setattr(eng.recorder, "start", recorder_start)
+    assert eng._begin()
+    assert eng._begin()
+    notices = [d for k, d in eng.events if k == "notice"]
+    assert shared == [1, 1] and len(notices) == 1
+    assert notices[0]["title"] == "Mic privacy is partial"
+
+
 def test_writing_model_warms_up_while_you_talk(tmp_path, monkeypatch):
     """With "free memory right after each take" the writing model started from
     cold after every take: about 7 s before the text arrived (log, 2026-10-24).

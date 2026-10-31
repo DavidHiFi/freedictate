@@ -490,8 +490,8 @@ class SettingsWindow(FluentWindow):
         privacy = Toggle(cfg["mic_privacy_while_dictating"])
         privacy.toggled.connect(lambda on: cfg.update({"mic_privacy_while_dictating": on}))
         card.add(Row("Keep my mic private",
-                     "Other apps, like a Discord call, hear silence from every microphone until I stop. "
-                     "If an app can't be silenced, the take doesn't start.",
+                     "While I dictate, other apps, like a Discord call, hear silence from every microphone. "
+                     "Their mic comes back the moment I stop.",
                      privacy))
         isolate = Toggle(cfg["isolate_output_while_dictating"])
         quiet = Combo([("0", "Mute them"), ("25", "25% volume"), ("50", "50% volume")],

@@ -74,6 +74,7 @@ class Engine:
         self._writer_held = False  # the take being recorded started the writing model
         self.suspended = False     # True while Settings records a new hotkey
         self._tidy_warned = False  # "AI tidy-up isn't ready" is said once per session
+        self._warned_shared = False  # "mic privacy is partial" is said once per session
         self._last_used = time.monotonic()  # last dictation activity; drives idle VRAM release
         self._cancel_matcher = self._make_cancel_matcher()
         self._take_seq = 0          # takes handed to the transcriber so far
@@ -491,6 +492,14 @@ class Engine:
                 log.warning("Exclusive capture failed; falling back to shared", exc_info=True)
                 self.recorder.start(self.cfg["input_device"])
                 ducking.capture_is_shared()
+                if not self._warned_shared:
+                    # An app reading this same mic now relies on its app mute
+                    # alone, which some setups ignore (measured 2026-10-31).
+                    self._warned_shared = True
+                    self.emit("notice", {"title": "Mic privacy is partial",
+                                         "text": "Another app has your mic, so FreeDictate couldn't take it over. "
+                                                 "Apps using the same mic may still hear you. Close them or allow "
+                                                 "exclusive control in Windows Sound settings."})
         except Exception as e:
             log.exception("Microphone failed to open")
             if privacy:

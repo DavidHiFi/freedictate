@@ -60,6 +60,7 @@ def worker(monkeypatch, tmp_path):
     monkeypatch.setattr(ducking, "RECORD", tmp_path / "audio-restore.json")
     monkeypatch.setattr(ducking, "MIC_RECORD", tmp_path / "mic-privacy-restore.json")
     monkeypatch.setattr(ducking, "OWED", tmp_path / "mic-privacy-owed.json")
+    monkeypatch.setattr(ducking, "_AFTERCARE", 0.0)   # aftercare has its own tests
     return w
 
 
@@ -118,6 +119,7 @@ def live_worker(monkeypatch, tmp_path):
     monkeypatch.setattr(ducking, "MIC_RECORD", tmp_path / "mic-privacy-restore.json")
     monkeypatch.setattr(ducking, "OWED", tmp_path / "mic-privacy-owed.json")
     monkeypatch.setattr(ducking, "_RESCAN_INTERVAL", 0.05)
+    monkeypatch.setattr(ducking, "_AFTERCARE", 0.0)
     w = ducking._Worker()
     monkeypatch.setattr(ducking, "_get_worker", lambda: w)
     yield w
@@ -632,17 +634,114 @@ def test_a_device_that_gains_a_reader_mid_take_is_held(worker, monkeypatch):
     assert clients["game"].stopped and not worker.state.held
 
 
-def test_holds_are_released_when_privacy_is_lost_mid_take(worker, monkeypatch):
+def test_a_failed_rescan_keeps_every_mute_and_hold_until_the_take_ends(worker, monkeypatch):
+    """One failed scan used to drop privacy for the rest of the take."""
     clients = grant_holds(monkeypatch)
     endpoints(monkeypatch, ("ours", FakeVolume(1, False), set()), ("discord", FakeVolume(1, False), {"discord.exe"}))
-    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [])
+    session = FakeVolume(1, False)
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [("s", 123, 1, session.muted, session)])
     ducking.start_capture_privacy("ours")
 
     def broken():
         raise OSError("audio service went away")
     monkeypatch.setattr(ducking, "_enumerate_capture", broken)   # the next re-scan fails
     tick(worker)
-    assert clients["discord"].stopped and not worker.state.held
+    assert session.muted and not clients["discord"].stopped and worker.state.held
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [("s", 123, 1, session.muted, session)])
+    ducking.stop_capture_privacy()
+    assert not session.muted and clients["discord"].stopped
+
+
+def test_a_failed_first_scan_still_turns_privacy_on(worker, monkeypatch):
+    session = FakeVolume(1, False)
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("enumeration failed once")
+        return [("s", 123, 1, session.muted, session)]
+    monkeypatch.setattr(ducking, "_enumerate_capture", flaky)
+    ducking.start_capture_privacy()             # does not raise
+    assert worker.state.capture_active
+    tick(worker)
+    assert session.muted
+    ducking.stop_capture_privacy()
+    assert not session.muted
+
+
+def test_a_record_that_cannot_be_written_does_not_stop_privacy(worker, monkeypatch, tmp_path):
+    monkeypatch.setattr(ducking, "MIC_RECORD", tmp_path / "missing-dir" / "x" / "rec.json")
+    session = FakeVolume(1, False)
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [("s", 123, 1, session.muted, session)])
+    ducking.start_capture_privacy()
+    assert session.muted
+    ducking.stop_capture_privacy()
+    assert not session.muted
+
+
+def test_sessions_are_unmuted_before_holds_are_let_go(worker, monkeypatch):
+    """Discord reopens its mic the moment a hold ends; it must find it unmuted."""
+    order = []
+    clients = grant_holds(monkeypatch)
+    endpoints(monkeypatch, ("ours", FakeVolume(1, False), set()), ("discord", FakeVolume(1, False), {"discord.exe"}))
+
+    class Logged(FakeVolume):
+        def SetMute(self, m, ctx=None):
+            if not m:
+                order.append("unmute")
+            super().SetMute(m, ctx)
+    session = Logged(1, False)
+    monkeypatch.setattr(ducking, "_enumerate_capture", lambda: [("s", 123, 1, session.muted, session)])
+    ducking.start_capture_privacy("ours")
+    clients["discord"].Stop = lambda: order.append("release")
+    ducking.stop_capture_privacy()
+    assert order == ["unmute", "release"]
+
+
+def test_an_audio_router_session_is_never_muted(worker, monkeypatch):
+    monkeypatch.setattr(ducking, "_app_of", lambda pid: "voicemeeter.exe" if pid == 1 else f"app{pid}.exe")
+    router, discord = FakeVolume(1, False), FakeVolume(1, False)
+    monkeypatch.setattr(ducking, "_enumerate_capture",
+                        lambda: [("r", 1, 1, router.muted, router), ("d", 2, 1, discord.muted, discord)])
+    ducking.start_capture_privacy()
+    assert not router.muted and discord.muted
+    ducking.stop_capture_privacy()
+    assert not discord.muted
+
+
+def test_a_mic_reopened_muted_after_the_take_is_unmuted(worker, monkeypatch):
+    """Discord reopens its mic after a hold; the new session can come up muted."""
+    monkeypatch.setattr(ducking, "_AFTERCARE", 8.0)
+    monkeypatch.setattr(ducking, "_app_of", lambda pid: "discord.exe" if pid in (2, 3) else f"app{pid}.exe")
+    old, users = FakeVolume(1, False), FakeVolume(1, True)
+    live = [("d", 2, old), ("u", 9, users)]
+    monkeypatch.setattr(ducking, "_enumerate_capture",
+                        lambda: [(k, pid, v.volume, v.muted, v) for k, pid, v in live])
+    ducking.start_capture_privacy()
+    ducking.stop_capture_privacy()
+    assert worker.state.busy()                  # aftercare keeps the worker looking
+    reopened = FakeVolume(1, True)
+    live.append(("d2", 3, reopened))
+    tick(worker)
+    assert not reopened.muted                   # put back at once
+    assert users.muted                          # a mute the user set stays
+    worker.state.aftercare_until = time.monotonic() - 1
+    tick(worker)
+    assert not worker.state.busy()
+
+
+def test_aftercare_leaves_alone_an_app_the_take_never_muted(worker, monkeypatch):
+    monkeypatch.setattr(ducking, "_AFTERCARE", 8.0)
+    live = []
+    monkeypatch.setattr(ducking, "_enumerate_capture",
+                        lambda: [(k, pid, v.volume, v.muted, v) for k, pid, v in live])
+    ducking.start_capture_privacy()
+    ducking.stop_capture_privacy()
+    stranger = FakeVolume(1, True)
+    live.append(("x", 7, stranger))
+    tick(worker)
+    assert stranger.muted
 
 
 def test_holds_survive_a_shared_take(worker, monkeypatch):
