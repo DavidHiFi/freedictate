@@ -35,9 +35,9 @@ windows = { version = "0.62", features = [
     "Win32_System_Ole",
     "Win32_System_SystemInformation",
 ] }
-fancy-regex = "0.19.2"
-rusqlite = { version = "0.33", features = ["bundled"] }
-sha2 = "0.10"
+fancy-regex = "0.20.0"
+rusqlite = { version = "0.41", features = ["bundled"] }
+sha2 = "0.11"
 
 [dev-dependencies]
 hound = "3.5"
