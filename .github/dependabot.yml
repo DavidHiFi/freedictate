@@ -7,6 +7,7 @@ updates:
     groups:
       pip-updates:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
       pip-security:
         applies-to: security-updates
         patterns: ["*"]
@@ -17,6 +18,7 @@ updates:
     groups:
       cargo-updates:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
       cargo-security:
         applies-to: security-updates
         patterns: ["*"]
