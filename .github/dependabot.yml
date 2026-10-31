@@ -7,10 +7,16 @@ updates:
     groups:
       pip-updates:
         patterns: ["*"]
+      pip-security:
+        applies-to: security-updates
+        patterns: ["*"]
   - package-ecosystem: "cargo"
     directory: "/rust-rewrite"
     schedule:
       interval: "weekly"
     groups:
       cargo-updates:
+        patterns: ["*"]
+      cargo-security:
+        applies-to: security-updates
         patterns: ["*"]
