@@ -107,10 +107,11 @@ if (-not $NoSelfTest) {
   if (Test-Path $report) { Remove-Item $report -Force }
   # Started directly, not through the shell: shell-starting a fresh unsigned
   # exe can raise Windows' "Open File - Security Warning" on the desktop and
-  # stall the build until someone clicks it (seen 2026-10-31).
+  # stall the build until someone clicks it (seen 2026-10-31). Arguments as a
+  # quoted string, not ArgumentList: the build runs under Windows PowerShell
+  # 5.1, whose .NET Framework ProcessStartInfo has no ArgumentList.
   $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
-  $psi.ArgumentList.Add("--self-test")
-  $psi.ArgumentList.Add($report)
+  $psi.Arguments = '--self-test "{0}"' -f $report
   $psi.UseShellExecute = $false
   $psi.CreateNoWindow = $true
   $p = [System.Diagnostics.Process]::Start($psi)
