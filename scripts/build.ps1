@@ -105,7 +105,16 @@ if (-not $NoSelfTest) {
   Write-Host "== self-test on the frozen exe =="
   $report = Join-Path $env:TEMP "freedictate-selftest.txt"
   if (Test-Path $report) { Remove-Item $report -Force }
-  $p = Start-Process -FilePath $exe -ArgumentList "--self-test", $report -Wait -PassThru
+  # Started directly, not through the shell: shell-starting a fresh unsigned
+  # exe can raise Windows' "Open File - Security Warning" on the desktop and
+  # stall the build until someone clicks it (seen 2026-10-31).
+  $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+  $psi.ArgumentList.Add("--self-test")
+  $psi.ArgumentList.Add($report)
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $p = [System.Diagnostics.Process]::Start($psi)
+  $p.WaitForExit()
   Get-Content $report
   if ($p.ExitCode -ne 0) { throw "Self-test FAILED (exit $($p.ExitCode))" }
 }
