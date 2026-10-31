@@ -25,6 +25,7 @@ user32.GetForegroundWindow.restype = wt.HWND
 dwmapi.DwmSetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
 dwmapi.DwmExtendFrameIntoClientArea.argtypes = [wt.HWND, ctypes.c_void_p]
 dwmapi.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
+dwmapi.DwmEnableBlurBehindWindow.argtypes = [wt.HWND, ctypes.c_void_p]
 user32.SetWindowPlacement.argtypes = [wt.HWND, ctypes.c_void_p]
 user32.GetWindowPlacement.argtypes = [wt.HWND, ctypes.c_void_p]
 user32.IsIconic.argtypes = [wt.HWND]
@@ -134,10 +135,29 @@ def _set_accent(hwnd: int, state: int, gradient: int = 0) -> bool:
     return bool(user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data)))
 
 
-def set_backdrop(hwnd: int, kind: str, extend: bool = False) -> bool:
+class _BLURBEHIND(ctypes.Structure):
+    _fields_ = [("flags", wt.DWORD), ("enable", wt.BOOL), ("rgn", wt.HRGN), ("on_max", wt.BOOL)]
+
+
+gdi32.CreateRectRgn.restype = wt.HRGN
+
+
+def _blur_behind(hwnd: int, on: bool) -> None:
+    """The legacy blur-behind switch with an empty region. Under the Windows
+    title bar the accent reaches the caption only while this is on: without it
+    DWM paints the caption flat over the accent (measured on 26300)."""
+    rgn = gdi32.CreateRectRgn(0, 0, -1, -1) if on else None
+    bb = _BLURBEHIND(0x1 | 0x2 | 0x4, on, rgn, on)  # ENABLE | BLURREGION | TRANSITIONONMAXIMIZED
+    dwmapi.DwmEnableBlurBehindWindow(hwnd, ctypes.byref(bb))
+    if rgn:
+        gdi32.DeleteObject(rgn)
+
+
+def set_backdrop(hwnd: int, kind: str, extend: bool = False, tint: int = 0) -> bool:
     """Apply a system backdrop. ``extend`` is for windows that keep the Windows
     title bar: the frame is extended over the client so the material runs
-    from the caption into the body."""
+    from the caption into the body. ``tint`` (0xAABBGGRR) colours Blur under
+    the Windows title bar, where DWM draws the tint for caption and body alike."""
     if not backdrop_supported():
         return False
     # Frameless windows keep margins at 0: a -1 "sheet of glass" makes DWM paint
@@ -145,9 +165,16 @@ def set_backdrop(hwnd: int, kind: str, extend: bool = False) -> bool:
     # (measured on 26200).
     m = -1 if extend and kind != "solid" else 0
     dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(MARGINS(m, m, m, m)))
+    if extend:
+        _blur_behind(hwnd, kind == "blur")
     if kind == "blur":
         # Blur is an accent, not a system backdrop; the two would stack.
         _attr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, 1)
+        if extend:
+            # The acrylic accent takes a tint, so the caption and body match
+            # (measured: caption 20.5 to 124.5, body 18.6 to 125.6 across a
+            # black/white edge at 50%). It draws no grain of its own.
+            return _set_accent(hwnd, _ACCENT_ACRYLIC, tint)
         return _set_accent(hwnd, _ACCENT_BLURBEHIND)
     _set_accent(hwnd, _ACCENT_DISABLED)
     return _attr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, BACKDROP_VALUES.get(kind, 1)) == 0

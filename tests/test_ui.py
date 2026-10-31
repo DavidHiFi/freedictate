@@ -587,7 +587,8 @@ def test_blur_is_a_material_choice(qapp, env):
     win = open_window(qapp, cfg, env)
     try:
         assert win.backdrop_row.desc.text().startswith("Blur:")
-        assert win.effective_backdrop() in ("blur", "solid")   # offscreen tests have no real HWND to blur
+        supported = native.backdrop_supported() and native.transparency_enabled()
+        assert win.effective_backdrop() == ("blur" if supported else "solid")
     finally:
         win.dispose()
         win.close()

@@ -16,6 +16,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes as wt
 
+import shiboken6
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter
 from PySide6.QtWidgets import (QAbstractButton, QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -167,6 +168,12 @@ class FluentWindow(QWidget):
         return f if self._native_tb else f | Qt.WindowType.FramelessWindowHint
 
     # ------------------------------------------------------------ appearance
+    def _soon(self, ms: int, fn) -> None:
+        """Run ``fn`` later, unless the window is gone by then. A title bar switch
+        deletes this window while its caption and geometry timers are pending
+        (measured: RuntimeError in _apply_caption on a deleted SettingsWindow)."""
+        QTimer.singleShot(ms, lambda: shiboken6.isValid(self) and fn())
+
     def hwnd(self) -> int:
         return int(self.winId())
 
@@ -190,8 +197,17 @@ class FluentWindow(QWidget):
         pal = theme.current()
         native.set_dark(h, pal.dark)
         native.set_corners(h)
-        native.set_backdrop(h, self._backdrop, extend=self._native_tb)
+        tint = 0
+        if self._dwm_tints():
+            r, g, b = (int(pal.bg[i:i + 2], 16) for i in (1, 3, 5))
+            tint = (round(self._tint * 255) << 24) | (b << 16) | (g << 8) | r
+        native.set_backdrop(h, self._backdrop, extend=self._native_tb, tint=tint)
         self._apply_caption()
+
+    def _dwm_tints(self) -> bool:
+        """Blur under the Windows title bar: DWM draws the tint over caption and
+        body alike, so the body paints none of its own."""
+        return self._native_tb and self._backdrop == "blur"
 
     def _apply_caption(self) -> None:
         # Qt paints the Windows caption in the palette's window colour on show
@@ -205,7 +221,7 @@ class FluentWindow(QWidget):
             # The body paints pal.bg opaque, so the caption is exactly that.
             native.set_caption(h, pal.bg, self._caption_text(pal, pal.bg))
             return
-        if self._tint <= 0.0:
+        if self._tint <= 0.0 or self._dwm_tints():
             # The strip shows the raw material; dim the text toward pal.bg as a
             # stand-in for the material tone it sits on.
             native.set_caption(h, None, self._caption_text(pal, pal.bg))
@@ -244,7 +260,7 @@ class FluentWindow(QWidget):
         self._cap_measuring = True
         native.set_caption(self.hwnd(), None, self._caption_text(theme.current(), theme.current().bg))  # raw material in the strip
         # A DWM backdrop switch animates for a few hundred ms; measure after it.
-        QTimer.singleShot(600, self._measure_caption_tone)
+        self._soon(600, self._measure_caption_tone)
 
     def _measure_caption_tone(self) -> None:
         self._cap_measuring = False
@@ -283,16 +299,16 @@ class FluentWindow(QWidget):
             self._apply_dwm()
             self._chrome_applied = True
         self._sync_margins()
-        QTimer.singleShot(0, self._record_normal)
-        QTimer.singleShot(0, self._apply_caption)
+        self._soon(0, self._record_normal)
+        self._soon(0, self._apply_caption)
 
     def paintEvent(self, e):
         p = QPainter(self)
         pal = theme.current()
         # Solid covers the material completely; a material takes the tint over
-        # it. The Windows title bar can't take the tint: it keeps the raw
-        # material, drawn by DWM outside this client area.
-        alpha = 1.0 if self._backdrop == "solid" else self._tint
+        # it. Blur under the Windows title bar takes its tint from DWM instead
+        # (see _dwm_tints).
+        alpha = 1.0 if self._backdrop == "solid" else 0.0 if self._dwm_tints() else self._tint
         # One step above zero keeps the window clickable: a layered window's
         # fully transparent pixels pass clicks to the window behind.
         p.fillRect(self.rect(), theme.qc(pal.bg, max(alpha, 1 / 255)))
@@ -334,11 +350,11 @@ class FluentWindow(QWidget):
             self.titlebar.btn_max.set_kind("restore" if self.isMaximized() else "maximize")
             self._sync_margins()
             if self.isMaximized() or self.isMinimized():
-                QTimer.singleShot(0, self._restore_normal)
+                self._soon(0, self._restore_normal)
         elif e.type() in (QEvent.Type.PaletteChange, QEvent.Type.StyleChange):
-            QTimer.singleShot(0, self._apply_caption)
+            self._soon(0, self._apply_caption)
         elif e.type() == QEvent.Type.ActivationChange:
-            QTimer.singleShot(0, self._apply_caption)
+            self._soon(0, self._apply_caption)
             self.titlebar.refresh()
             self.activeChanged.emit(self.isActiveWindow())
         super().changeEvent(e)
@@ -361,13 +377,11 @@ class FluentWindow(QWidget):
         except (TypeError, ValueError):
             return False, 0
         m = msg.message
-        if m == native.WM_NCACTIVATE and self._keep_active and self._backdrop != "solid" and not self._native_tb:
+        if m == native.WM_NCACTIVATE and self._keep_active and self._backdrop != "solid":
             # Report "active" to the frame so DWM keeps the material instead of
             # switching to its flat inactive colour. Focus handling is unchanged.
-            # Frameless windows only: with the Windows title bar the real state
-            # has to reach DefWindowProc so DWM dims its own caption buttons,
-            # and the re-asserted caption colour (see _apply_caption) keeps the
-            # material tone instead.
+            # With the Windows title bar this also stops DWM dimming the caption
+            # buttons on unfocus; the caption title still dims in _caption_text.
             return True, native.user32.DefWindowProcW(msg.hWnd, m, 1, -1)
         if self._native_tb:
             return False, 0
