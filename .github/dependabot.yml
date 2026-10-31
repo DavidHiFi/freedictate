@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      pip-updates:
+        patterns: ["*"]
+  - package-ecosystem: "cargo"
+    directory: "/rust-rewrite"
+    schedule:
+      interval: "weekly"
+    groups:
+      cargo-updates:
+        patterns: ["*"]
