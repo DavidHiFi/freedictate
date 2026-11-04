@@ -1,3 +1,6 @@
+> [!WARNING]
+> **FreeDictate is no longer developed.** Development halted on 2026-11-04: the [AI Voice Typing](https://windhawk.net/mods/ai-voice-typing) mod for [Windhawk](https://windhawk.net) covers the same job and is where dictation work now happens. The releases below stay up and keep working.
+
 <div align="center">
 
 <img src="docs/images/dictation.png" alt="FreeDictate settings, Dictation page" width="720">
