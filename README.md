@@ -14,12 +14,16 @@ Hold a shortcut, speak, and let go. The text lands at your cursor. No account, n
 <a href="https://github.com/DavidHiFi/freedictate/releases/latest">
 <img src="https://img.shields.io/badge/%E2%AC%87%EF%B8%8F%20DOWNLOAD%20LATEST%20RELEASE-2EA043?style=for-the-badge&labelColor=161B22" alt="Download the latest release" height="42">
 </a>
+<a href="https://discord.gg/PETWgTfS9x">
+<img src="https://img.shields.io/badge/JOIN%20THE%20DISCORD-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=161B22" alt="Join the Discord server" height="42">
+</a>
 
 <br><br>
 
 <img src="https://img.shields.io/github/v/release/DavidHiFi/freedictate?style=flat-square&label=version&color=8957E5&labelColor=161B22" alt="Latest version">
 <img src="https://img.shields.io/github/downloads/DavidHiFi/freedictate/total?style=flat-square&label=downloads&color=1F6FEB&labelColor=161B22" alt="Total downloads">
 <img src="https://img.shields.io/badge/platform-Windows-DB6D28?style=flat-square&labelColor=161B22" alt="Platform: Windows">
+<a href="https://github.com/DavidHiFi/freedictate/releases/latest"><img src="https://img.shields.io/badge/scanned-VirusTotal%20%2B%20SHA--256-394EFF?style=flat-square&logo=virustotal&logoColor=white&labelColor=161B22" alt="Every release file is scanned on VirusTotal and listed with its SHA-256 checksum"></a>
 
 </div>
 
